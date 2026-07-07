@@ -1,4 +1,4 @@
-import { powerMonitor, ipcMain, dialog } from 'electron'
+import { app, powerMonitor, ipcMain, dialog } from 'electron'
 import { getMainWindow } from './mainWindow'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc'
@@ -179,6 +179,33 @@ function registerPowerMonitorEvents() {
     powerMonitor.on('unlock-screen', () => {
         if (!idleDetectionEnabled) return
         console.log('powerMonitor: screen unlocked')
+        transitionToActive()
+        restartIdleCheckInterval()
+    })
+
+    // macOS and Linux emit an event when the system is about to shut down.
+    // Delay to set the idle timer and run normal app.quit() handlers.
+    powerMonitor.on('shutdown', (event?: Electron.Event) => {
+        event?.preventDefault()
+        console.log('powerMonitor: system shutdown')
+        if (idleDetectionEnabled) {
+            clearIdleCheckInterval()
+            transitionToIdle(dayjs())
+        }
+        app.quit()
+    })
+
+    // macOS specific events for multi user switching
+    powerMonitor.on('user-did-resign-active', () => {
+        if (!idleDetectionEnabled) return
+        console.log('powerMonitor: user session resigned active')
+        clearIdleCheckInterval()
+        transitionToIdle(dayjs())
+    })
+
+    powerMonitor.on('user-did-become-active', () => {
+        if (!idleDetectionEnabled) return
+        console.log('powerMonitor: user session became active')
         transitionToActive()
         restartIdleCheckInterval()
     })
