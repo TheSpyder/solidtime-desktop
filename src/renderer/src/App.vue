@@ -78,11 +78,7 @@ window.getWeekStartSetting = () => meResponse.value?.data?.week_start || 'monday
 const isMeLoaded = computed(() => !!meResponse.value?.data)
 
 // Watch timer state and notify main process for idle detection
-watch(isActive, (active) => {
-    if (window.electronAPI?.timerStateChanged) {
-        window.electronAPI.timerStateChanged(active)
-    }
-})
+watch(isActive, (active) => window.electronAPI?.timerStateChanged?.(active), { immediate: true })
 
 onMounted(async () => {
     initializeAuth(queryClient)
