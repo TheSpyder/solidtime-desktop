@@ -296,11 +296,7 @@ async function showIdleDialog(idleStartTime: string, idleEndTime: string, durati
     const startTime = formatTime(idleStartTime)
     const endTime = formatTime(idleEndTime)
 
-    // Focus the main window to ensure dialog appears on top
-    if (mainWindow.isMinimized()) {
-        mainWindow.restore()
-    }
-    mainWindow.focus()
+    mainWindow.flashFrame(true)
 
     const result = await dialog.showMessageBox(mainWindow, {
         type: 'question',
@@ -312,6 +308,7 @@ async function showIdleDialog(idleStartTime: string, idleEndTime: string, durati
         cancelId: 0,
         noLink: true,
     })
+    mainWindow.flashFrame(false)
 
     // Handle the user's choice
     if (result.response === 0) {
