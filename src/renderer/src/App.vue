@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { PrimaryButton, time } from '@solidtime/ui'
+import { PrimaryButton, SecondaryButton, time } from '@solidtime/ui'
 import { Cog6ToothIcon } from '@heroicons/vue/16/solid'
 
 declare global {
@@ -11,9 +11,10 @@ declare global {
 
 import AutoUpdaterOverlay from './components/AutoUpdaterOverlay.vue'
 import { useQueryClient, useQuery } from '@tanstack/vue-query'
+import { isAxiosError } from 'axios'
 
 import { onMounted, ref, watchEffect, watch, computed } from 'vue'
-import { initializeAuth, isLoggedIn, openLoginWindow } from './utils/oauth.ts'
+import { initializeAuth, isLoggedIn, logout, openLoginWindow, endpoint } from './utils/oauth.ts'
 
 import InstanceSettingsModal from './components/InstanceSettingsModal.vue'
 import { hideMiniWindow, showMiniWindow } from './utils/window.ts'
@@ -63,10 +64,26 @@ watchEffect(() => {
 })
 
 // Fetch user data for timezone and week start settings
-const { data: meResponse } = useQuery({
+const {
+    data: meResponse,
+    isError: meIsError,
+    error: meError,
+    refetch: meRefetch,
+} = useQuery({
     queryKey: ['me'],
     queryFn: () => getMe(),
     enabled: isLoggedIn,
+    retry: 2,
+    networkMode: 'always',
+})
+
+const meErrorMessage = computed(() => {
+    const error = meError.value
+    if (!error) return ''
+    if (isAxiosError(error) && error.response) {
+        return `The server responded with HTTP ${error.response.status} ${error.response.statusText}`.trimEnd()
+    }
+    return error.message
 })
 
 const deviceTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -188,7 +205,24 @@ whenever(cmdComma, () => {
                 </div>
             </div>
             <div v-else-if="isLoggedIn" class="flex-1 flex items-center justify-center">
-                <div class="text-text-tertiary font-medium text-sm">Loading…</div>
+                <div
+                    v-if="meIsError"
+                    class="flex flex-col items-center space-y-4 px-8 max-w-md text-center">
+                    <div class="text-text-primary font-semibold text-sm">
+                        Could not connect to {{ endpoint }}
+                    </div>
+                    <div class="text-text-tertiary text-sm">
+                        Check that the server is reachable, then try again.
+                    </div>
+                    <div v-if="meErrorMessage" class="text-text-tertiary text-xs font-mono">
+                        {{ meErrorMessage }}
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <PrimaryButton @click="meRefetch()">Retry</PrimaryButton>
+                        <SecondaryButton @click="logout(queryClient)">Log out</SecondaryButton>
+                    </div>
+                </div>
+                <div v-else class="text-text-tertiary font-medium text-sm">Loading…</div>
             </div>
             <div v-else class="flex-1">
                 <div class="flex flex-col space-y-6 py-12 items-center justify-center">

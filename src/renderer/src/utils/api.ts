@@ -9,6 +9,9 @@ export const apiClient = computed(() => {
 
     const axiosInstance = client.axios
 
+    // 10 second timeout on requests
+    axiosInstance.defaults.timeout = 10000
+
     axiosInstance.interceptors.request.use(
         (config) => {
             if (accessToken.value) {
