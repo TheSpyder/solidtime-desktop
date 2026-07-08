@@ -40,6 +40,7 @@ let idleDetectionEnabled = true
 let isTimerRunning = false
 let waitingForUserResponse = false // Track if we're waiting for idle dialog response
 let powerEventsRegistered = false
+let isScreenLocked = false // Defer resume handling until unlock so the dialog uses the unlock time
 
 export async function initializeIdleMonitor() {
     // Load settings from database
@@ -110,6 +111,7 @@ function transitionToIdle(idleStart: Dayjs) {
 }
 
 function transitionToActive() {
+    if (isScreenLocked) return // Stay idle until the screen is unlocked
     if (!isIdle || !idleStartTime) return // Guard against double-fire
 
     const idleEnd = dayjs()
@@ -163,6 +165,7 @@ function registerPowerMonitorEvents() {
     })
 
     powerMonitor.on('lock-screen', () => {
+        isScreenLocked = true
         if (!idleDetectionEnabled) return
         console.log('powerMonitor: screen locked')
         clearIdleCheckInterval()
@@ -172,11 +175,16 @@ function registerPowerMonitorEvents() {
     powerMonitor.on('resume', () => {
         if (!idleDetectionEnabled) return
         console.log('powerMonitor: system resume')
+        if (isScreenLocked) {
+            console.log('Screen still locked on resume, staying idle until unlock')
+            return
+        }
         transitionToActive()
         restartIdleCheckInterval()
     })
 
     powerMonitor.on('unlock-screen', () => {
+        isScreenLocked = false
         if (!idleDetectionEnabled) return
         console.log('powerMonitor: screen unlocked')
         transitionToActive()
