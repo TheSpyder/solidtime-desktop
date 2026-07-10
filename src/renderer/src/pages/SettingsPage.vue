@@ -25,6 +25,11 @@ import {
     idleDetectionEnabled,
     idleThresholdMinutes,
     activityTrackingEnabled,
+    workdayTrackingEnabled,
+    workdayReminderThresholdMinutes,
+    workdayDays,
+    workdayStartTime,
+    workdayEndTime,
 } from '../utils/settings.ts'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { getMe } from '../utils/me'
@@ -333,6 +338,19 @@ onMounted(async () => {
     })
 })
 
+// Workday day-of-week toggles (Monday first to match the app's week start)
+const workdayDayOptions = [
+    { day: 1, label: 'Mon' },
+    { day: 2, label: 'Tue' },
+    { day: 3, label: 'Wed' },
+    { day: 4, label: 'Thu' },
+    { day: 5, label: 'Fri' },
+    { day: 6, label: 'Sat' },
+    { day: 0, label: 'Sun' },
+]
+
+const workdayWindowInvalid = computed(() => workdayStartTime.value >= workdayEndTime.value)
+
 // Watch for idle detection settings changes and notify main process
 watch(idleDetectionEnabled, (enabled) => {
     window.electronAPI.updateIdleDetectionEnabled(enabled)
@@ -420,6 +438,66 @@ watch(activityTrackingEnabled, (enabled) => {
                             min="1"
                             max="60"
                             class="w-20 px-2 py-1 text-sm bg-card-background border border-card-background-separator rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                    </div>
+                    <label class="flex items-center">
+                        <Checkbox v-model:checked="workdayTrackingEnabled" name="workdayTracking" />
+                        <span class="ms-2 text-sm">Set My Working Hours</span>
+                    </label>
+                    <div v-if="workdayTrackingEnabled" class="ml-6 space-y-2">
+                        <p class="text-xs text-muted-foreground">
+                            During your working hours, Solidtime reminds you to start a timer, and
+                            stops timers left running when you finish for the day.
+                        </p>
+                        <div class="flex items-center space-x-2">
+                            <label for="workdayReminderThreshold" class="text-sm">
+                                Remind after being active for (minutes):
+                            </label>
+                            <input
+                                id="workdayReminderThreshold"
+                                v-model.number="workdayReminderThresholdMinutes"
+                                type="number"
+                                min="1"
+                                max="120"
+                                class="w-20 px-2 py-1 text-sm bg-card-background border border-card-background-separator rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-sm">On days:</span>
+                            <div class="flex space-x-1">
+                                <label
+                                    v-for="option in workdayDayOptions"
+                                    :key="option.day"
+                                    class="px-2 py-1 text-xs rounded border cursor-pointer focus-within:ring-2 focus-within:ring-blue-500"
+                                    :class="
+                                        workdayDays.includes(option.day)
+                                            ? 'bg-blue-500 border-blue-500 text-white'
+                                            : 'bg-card-background border-card-background-separator text-muted-foreground'
+                                    ">
+                                    <input
+                                        v-model="workdayDays"
+                                        type="checkbox"
+                                        :value="option.day"
+                                        class="sr-only" />
+                                    {{ option.label }}
+                                </label>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <label for="workdayStart" class="text-sm">Between:</label>
+                            <input
+                                id="workdayStart"
+                                v-model="workdayStartTime"
+                                type="time"
+                                class="px-2 py-1 text-sm bg-card-background border border-card-background-separator rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                            <span class="text-sm">and</span>
+                            <input
+                                id="workdayEnd"
+                                v-model="workdayEndTime"
+                                type="time"
+                                class="px-2 py-1 text-sm bg-card-background border border-card-background-separator rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </div>
+                        <p v-if="workdayWindowInvalid" class="text-xs text-yellow-600">
+                            Start time must be before end time — no reminders will be shown.
+                        </p>
                     </div>
                     <label
                         class="flex items-center"

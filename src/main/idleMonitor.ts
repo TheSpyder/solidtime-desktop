@@ -7,6 +7,7 @@ import type { Dayjs } from 'dayjs'
 import { db } from './db/client'
 import { activityPeriods, validateNewActivityPeriod } from './db/schema'
 import { getAppSettings } from './settings'
+import { isTimerRunning } from './timerState'
 
 // Configure dayjs for main process
 dayjs.extend(utc)
@@ -37,10 +38,30 @@ let idleStartTime: Dayjs | null = null
 let activeStartTime: Dayjs | null = null
 let idleThreshold = 300
 let idleDetectionEnabled = true
-let isTimerRunning = false
 let waitingForUserResponse = false // Track if we're waiting for idle dialog response
 let powerEventsRegistered = false
 let isScreenLocked = false // Defer resume handling until unlock so the dialog uses the unlock time
+let lastInputBeforeBlock: Dayjs | null = null // Where idle starts if the gap crosses the workday
+let suppressNextDialog = false // Set by the workday monitor when auto-stop should replace the dialog
+// TODO: rename
+let inputFloor: Dayjs | null = null
+
+/**
+ * The moment of the last user input, derived from the system idle time.
+ */
+export function lastInputTime(): Dayjs {
+    const lastInput = dayjs().subtract(powerMonitor.getSystemIdleTime(), 'seconds')
+    return inputFloor && lastInput.isBefore(inputFloor) ? inputFloor : lastInput
+}
+
+/**
+ * Suppresses the idle dialog for the next transition to active, saving the
+ * idle period silently instead. Called by the workday monitor when a
+ * workday-boundary auto-stop already decides the timer's fate for that gap.
+ */
+export function suppressNextIdleDialog() {
+    suppressNextDialog = true
+}
 
 export async function initializeIdleMonitor() {
     // Load settings from database
@@ -83,12 +104,6 @@ function registerIdleMonitorListeners() {
         } else if (enabled && !idleCheckInterval) {
             startIdleMonitoring()
         }
-    })
-
-    // Listen for timer state changes
-    ipcMain.on('timerStateChanged', (_event, running: boolean) => {
-        isTimerRunning = running
-        console.log('Timer state changed:', running)
     })
 }
 
@@ -133,7 +148,12 @@ function transitionToActive() {
 
     // Only show dialog if timer is running and we're not already waiting for a response
     // This prevents multiple dialogs from appearing
-    if (isTimerRunning && !waitingForUserResponse) {
+    if (suppressNextDialog) {
+        // A workday auto-stop already handled the timer for this gap;
+        // record the idle period without asking
+        suppressNextDialog = false
+        saveActivityPeriod(capturedIdleStart, capturedIdleEnd, true)
+    } else if (isTimerRunning() && !waitingForUserResponse) {
         waitingForUserResponse = true
 
         // Show dialog asynchronously without blocking the interval
@@ -145,10 +165,54 @@ function transitionToActive() {
                 console.error('Error showing idle dialog:', error)
                 waitingForUserResponse = false
             })
-    } else if (!isTimerRunning) {
+    } else if (!isTimerRunning()) {
         // If timer is not running, just save the idle period automatically
         saveActivityPeriod(capturedIdleStart, capturedIdleEnd, true)
     }
+}
+
+/**
+ * The system blocked (suspend, lock, user switch) while monitoring. Whether
+ * this counts as idle is decided at unblock time by comparing the gap against
+ * the idle threshold — a short sleep or lock is not idle, the same as a short
+ * pause at the keyboard.
+ */
+function handleBlock(reason: string) {
+    console.log(`powerMonitor: ${reason}`)
+    // Stop the polling interval BEFORE recording the block
+    // to prevent a final tick from mutating state mid-transition
+    clearIdleCheckInterval()
+    if (!isIdle && lastInputBeforeBlock === null) {
+        // Keyboard idle leading into the block counts toward the gap, the
+        // same as if the user had stayed at the desk
+        lastInputBeforeBlock = lastInputTime()
+    }
+}
+
+/**
+ * The system unblocked (resume, unlock, user switch back). Classify the gap:
+ * already idle before the block → normal resume flow; no input for ≥ the
+ * threshold → an idle period from the last input; otherwise continuous
+ * activity.
+ */
+function handleUnblock(reason: string) {
+    console.log(`powerMonitor: ${reason}`)
+    if (isIdle) {
+        transitionToActive()
+        inputFloor = dayjs() // The recorded idle ends here; don't re-count it
+    } else if (lastInputBeforeBlock !== null) {
+        const gapSeconds = dayjs().diff(lastInputBeforeBlock, 'seconds')
+        if (gapSeconds >= idleThreshold) {
+            transitionToIdle(lastInputBeforeBlock)
+            transitionToActive()
+            inputFloor = dayjs() // The recorded idle ends here; don't re-count it
+        } else {
+            console.log(`Input gap of ${gapSeconds}s is below the idle threshold, staying active`)
+        }
+    }
+    lastInputBeforeBlock = null
+    suppressNextDialog = false // Never let a suppression outlive its unblock
+    restartIdleCheckInterval()
 }
 
 function registerPowerMonitorEvents() {
@@ -157,42 +221,34 @@ function registerPowerMonitorEvents() {
 
     powerMonitor.on('suspend', () => {
         if (!idleDetectionEnabled) return
-        console.log('powerMonitor: system suspend')
-        // Stop the polling interval BEFORE transitioning to idle
-        // to prevent a final tick from flipping state back to active
-        clearIdleCheckInterval()
-        transitionToIdle(dayjs())
+        handleBlock('system suspend')
     })
 
     powerMonitor.on('lock-screen', () => {
         isScreenLocked = true
         if (!idleDetectionEnabled) return
-        console.log('powerMonitor: screen locked')
-        clearIdleCheckInterval()
-        transitionToIdle(dayjs())
+        handleBlock('screen locked')
     })
 
     powerMonitor.on('resume', () => {
         if (!idleDetectionEnabled) return
-        console.log('powerMonitor: system resume')
         if (isScreenLocked) {
-            console.log('Screen still locked on resume, staying idle until unlock')
+            console.log('powerMonitor: resume with screen still locked, waiting for unlock')
             return
         }
-        transitionToActive()
-        restartIdleCheckInterval()
+        handleUnblock('system resume')
     })
 
     powerMonitor.on('unlock-screen', () => {
         isScreenLocked = false
         if (!idleDetectionEnabled) return
-        console.log('powerMonitor: screen unlocked')
-        transitionToActive()
-        restartIdleCheckInterval()
+        handleUnblock('screen unlocked')
     })
 
     // macOS and Linux emit an event when the system is about to shut down.
-    // Delay to set the idle timer and run normal app.quit() handlers.
+    // Delay to save the current period and run normal app.quit() handlers.
+    // Shutdown always ends the active period at the shutdown time; the gap
+    // classification doesn't apply because there is no unblock to measure to.
     powerMonitor.on('shutdown', (event?: Electron.Event) => {
         event?.preventDefault()
         console.log('powerMonitor: system shutdown')
@@ -206,16 +262,12 @@ function registerPowerMonitorEvents() {
     // macOS specific events for multi user switching
     powerMonitor.on('user-did-resign-active', () => {
         if (!idleDetectionEnabled) return
-        console.log('powerMonitor: user session resigned active')
-        clearIdleCheckInterval()
-        transitionToIdle(dayjs())
+        handleBlock('user session resigned active')
     })
 
     powerMonitor.on('user-did-become-active', () => {
         if (!idleDetectionEnabled) return
-        console.log('powerMonitor: user session became active')
-        transitionToActive()
-        restartIdleCheckInterval()
+        handleUnblock('user session became active')
     })
 }
 
@@ -230,11 +282,10 @@ function restartIdleCheckInterval() {
     if (!idleDetectionEnabled) return
     clearIdleCheckInterval()
     idleCheckInterval = setInterval(() => {
-        const idleTime = powerMonitor.getSystemIdleTime()
+        const idleSince = lastInputTime()
 
-        if (idleTime >= idleThreshold) {
-            const now = dayjs()
-            transitionToIdle(now.subtract(idleTime, 'seconds'))
+        if (dayjs().diff(idleSince, 'seconds') >= idleThreshold) {
+            transitionToIdle(idleSince)
         } else {
             transitionToActive()
         }
@@ -251,14 +302,15 @@ function startIdleMonitoring() {
 
     isIdle = false
     idleStartTime = null
+    lastInputBeforeBlock = null
+    suppressNextDialog = false // A suppression must not survive a monitoring restart
 
     // Check current idle state immediately to set correct initial state
-    const currentIdleTime = powerMonitor.getSystemIdleTime()
-    if (currentIdleTime >= idleThreshold) {
+    const idleSince = lastInputTime()
+    if (dayjs().diff(idleSince, 'seconds') >= idleThreshold) {
         // System is already idle when monitoring starts
         isIdle = true
-        const now = dayjs()
-        idleStartTime = now.subtract(currentIdleTime, 'seconds')
+        idleStartTime = idleSince
         activeStartTime = null
         console.log(
             `System already idle when monitoring started. Idle since: ${idleStartTime.toISOString()}`
@@ -342,19 +394,20 @@ async function stopIdleMonitoring() {
     // Save the current active period if we're stopping while active
     if (activeStartTime && !isIdle) {
         const now = dayjs()
-        await saveActivityPeriod(activeStartTime.toISOString(), now.toISOString(), false)
+        await saveActivityPeriod(activeStartTime.utc().format(), now.utc().format(), false)
     }
 
     // Save current idle period if we're stopping while idle
     if (idleStartTime && isIdle) {
         const now = dayjs()
-        await saveActivityPeriod(idleStartTime.toISOString(), now.toISOString(), true)
+        await saveActivityPeriod(idleStartTime.utc().format(), now.utc().format(), true)
     }
 
     clearIdleCheckInterval()
     isIdle = false
     idleStartTime = null
     activeStartTime = null
+    lastInputBeforeBlock = null
     waitingForUserResponse = false
 }
 
@@ -382,6 +435,14 @@ export function getCurrentActivityPeriod(): { start: string; end: string; isIdle
     }
 
     return null
+}
+
+/**
+ * Current idle threshold in seconds. Also used by the timer reminder as the
+ * activity-continuity gap: a pause shorter than this keeps an active streak alive.
+ */
+export function getIdleThresholdSeconds(): number {
+    return idleThreshold
 }
 
 export { startIdleMonitoring, stopIdleMonitoring }

@@ -61,9 +61,17 @@ export function useTimer() {
         }
         currentTimeEntry.value = { ...emptyTimeEntry }
 
+        let end = endTime || dayjs().utc().format()
+        if (stoppedTimeEntry.start && dayjs(end).isBefore(stoppedTimeEntry.start)) {
+            // An entry cannot end before it starts. Possible when a workday
+            // auto-stop ends at this machine's last input but the timer was
+            // started elsewhere (e.g. web) while this machine sat idle.
+            end = stoppedTimeEntry.start
+        }
+
         await timeEntryStop.mutateAsync({
             ...stoppedTimeEntry,
-            end: endTime || dayjs().utc().format(),
+            end,
         })
     }
 
@@ -98,9 +106,10 @@ export function useTimer() {
      * Continue the last timer.
      * Starts a new timer using the values from lastTimeEntry (description, project, task, etc.).
      * Used when starting a timer from the widget, tray, or after discarding idle time.
+     * @param start - Optional start time to backdate the timer.
      */
-    function continueLastTimer() {
-        const startTime = dayjs().utc().format()
+    function continueLastTimer(start?: string) {
+        const startTime = start || dayjs().utc().format()
 
         if (lastTimeEntry.value && lastTimeEntry.value.start) {
             currentTimeEntry.value = {

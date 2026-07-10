@@ -108,19 +108,42 @@ onMounted(async () => {
     await listenForBackendEvent('startTimer', () => {
         continueLastTimer()
     })
-    await listenForBackendEvent('stopTimer', () => {
-        stopTimer()
+    await listenForBackendEvent('stopTimer', (endTime?: string) => {
+        stopTimer(endTime)
     })
 
     // Listen for idle dialog response from main process
     if (window.electronAPI?.onIdleDialogResponse) {
         window.electronAPI.onIdleDialogResponse((data) => {
-            handleIdleDialogResponse(data.choice, data.idleStartTime)
+            handleIdleDialogResponse(data.choice, data.idleStartTime, data.idleEndTime)
         })
+    }
+
+    // Listen for workday reminder response from main process
+    if (window.electronAPI?.onWorkdayReminderResponse) {
+        window.electronAPI.onWorkdayReminderResponse((data) => {
+            if (data.choice === 0 && !isActive.value) {
+                // Start a timer backdated to the beginning of the activity streak
+                continueLastTimer(data.activeSince)
+            }
+        })
+    }
+
+    // A block (sleep/shutdown) in a previous session may have crossed a
+    // workday boundary; collect the resulting stop now that we can handle it
+    if (window.electronAPI?.getPendingWorkdayStop) {
+        const pendingStop = await window.electronAPI.getPendingWorkdayStop()
+        if (pendingStop && isActive.value) {
+            await stopTimer(pendingStop)
+        }
     }
 })
 
-async function handleIdleDialogResponse(choice: number, idleStartTime: string) {
+async function handleIdleDialogResponse(
+    choice: number,
+    idleStartTime: string,
+    idleEndTime: string
+) {
     switch (choice) {
         case 0: // Keep Idle Time
             // Do nothing - keep timer running as-is
@@ -132,8 +155,9 @@ async function handleIdleDialogResponse(choice: number, idleStartTime: string) {
         case 2: // Discard & Start New Timer
             // Stop the timer and set the end time to when idle started
             await stopTimer(idleStartTime)
-            // Continue with the last timer's values after the stop completes
-            continueLastTimer()
+            // Continue with the last timer's values, backdated to when
+            // activity resumed (not to when the user answered the dialog)
+            continueLastTimer(idleEndTime)
             break
     }
 }

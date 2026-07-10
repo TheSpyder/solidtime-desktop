@@ -9,6 +9,8 @@ import { initializeMiniWindow, registerMiniWindowListeners } from './miniWindow'
 import { registerDeeplinkListeners } from './deeplink'
 import { registerVueDevTools } from './devtools'
 import { initializeIdleMonitor } from './idleMonitor'
+import { initializeWorkdayMonitor } from './workdayMonitor'
+import { registerTimerStateListener } from './timerState'
 import { runMigrations } from './db/migrate'
 import { registerActivityPeriodListeners } from './activityPeriods'
 import { registerSettingsListeners } from './settings'
@@ -145,6 +147,7 @@ app.whenReady().then(async () => {
     // Register IPC handlers
     registerActivityPeriodListeners()
     registerSettingsListeners()
+    registerTimerStateListener()
     registerWindowActivitiesHandlers()
     registerAppIconHandlers()
     registerXWinExtensionHandlers()
@@ -182,6 +185,8 @@ app.whenReady().then(async () => {
     })
 
     createWindow()
+    // The workday monitor must register first
+    await initializeWorkdayMonitor()
     await initializeIdleMonitor()
     await initializeActivityTracker()
 
