@@ -1,10 +1,17 @@
-import { dialog, ipcMain, powerMonitor } from 'electron'
+import { dialog, ipcMain } from 'electron'
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc'
 import type { Dayjs } from 'dayjs'
 import { getMainWindow } from './mainWindow'
 import { getAppSettings, getSetting, setSetting } from './settings'
-import { getIdleThresholdSeconds, lastInputTime, suppressNextIdleDialog } from './idleMonitor'
+import {
+    lastInputTime,
+    isUserIdle,
+    subscribePresence,
+    type BlockInfo,
+    type UnblockInfo,
+} from './presence'
+import { suppressNextIdleDialog } from './idleMonitor'
 import { isTimerRunning } from './timerState'
 import {
     isSameWorkdayWindow,
@@ -18,10 +25,6 @@ import {
 // window) to start a timer backdated to the start of the activity streak.
 // When a block (suspend/lock/shutdown) crosses a workday boundary while a
 // timer is running, silently stop the timer at the block time.
-//
-// NOTE: this module's power event handlers must be registered BEFORE the idle
-// monitor's (initializeWorkdayMonitor before initializeIdleMonitor), so an
-// auto-stop can suppress the idle dialog for the same unblock event.
 
 dayjs.extend(utc)
 
@@ -40,6 +43,7 @@ export interface WorkdaySettings {
 let thresholdSeconds = 600
 
 let workdayInterval: NodeJS.Timeout | null = null
+let unsubscribePresence: (() => void) | null = null
 // Start of the current uninterrupted activity streak; the backdated timer start
 let activeSince: Dayjs | null = null
 // Earliest time a new streak may begin. Prevents backdating across a boundary
@@ -47,18 +51,13 @@ let activeSince: Dayjs | null = null
 let streakFloor: Dayjs | null = null
 // After "Not Now", suppress prompts until this time
 let snoozeUntil: Dayjs | null = null
-// Block (suspend/lock) state; the unblock handler decides the streak's fate
+// While blocked (suspend/lock), the streak's fate is decided at unblock
 let systemBlocked = false
-let blockedAt: Dayjs | null = null
-// Where an auto-stopped timer ends: the last input before the block
-let stopAt: Dayjs | null = null
 let pendingStopPersisted = false
-let screenLocked = false
 // Boundary stop carried over from a previous session, delivered when the
 // renderer asks for it at startup
 let launchPendingStop: string | null = null
 let waitingForResponse = false
-let powerEventsRegistered = false
 
 export async function initializeWorkdayMonitor() {
     const appSettings = await getAppSettings()
@@ -80,7 +79,6 @@ export async function initializeWorkdayMonitor() {
     await loadPendingStopFromPreviousSession()
 
     registerWorkdayListeners()
-    registerPowerMonitorEvents()
 
     if (isWorkdayTrackingEnabled()) {
         startWorkdayMonitoring()
@@ -133,84 +131,53 @@ function registerWorkdayListeners() {
     })
 }
 
-function registerPowerMonitorEvents() {
-    if (powerEventsRegistered) return
-    powerEventsRegistered = true
-
-    powerMonitor.on('suspend', () => handleBlock('system suspend'))
-    powerMonitor.on('lock-screen', () => {
-        screenLocked = true
-        handleBlock('screen locked')
-    })
-    powerMonitor.on('resume', () => {
-        // May still be locked; the unblock then happens on unlock-screen
-        if (screenLocked) return
-        handleUnblock('system resume')
-    })
-    powerMonitor.on('unlock-screen', () => {
-        screenLocked = false
-        handleUnblock('screen unlocked')
-    })
-
-    // A shutdown never unblocks; persist the stop time and decide on next launch
-    powerMonitor.on('shutdown', () => {
-        if (isWorkdayTrackingEnabled() && isTimerRunning()) {
-            void setSetting(PENDING_STOP_KEY, lastInputTime().utc().format())
-        }
-    })
-
-    // macOS multi-user switching
-    powerMonitor.on('user-did-resign-active', () => handleBlock('user session resigned'))
-    powerMonitor.on('user-did-become-active', () => handleUnblock('user session active'))
-}
-
-function handleBlock(reason: string) {
-    if (systemBlocked) return // e.g. lock followed by suspend; keep the first block time
+function handleBlocked({ lastInput }: BlockInfo) {
     systemBlocked = true
-    blockedAt = dayjs()
-    // Work actually ended at the last input; trailing keyboard idle before
-    // the block must not be included in an auto-stopped entry
-    stopAt = lastInputTime()
-
-    console.log(`Workday monitor blocked: ${reason}`)
 
     if (isWorkdayTrackingEnabled() && isTimerRunning()) {
+        // Work actually ended at the last input; trailing keyboard idle before
+        // the block must not be included in an auto-stopped entry
         pendingStopPersisted = true
-        void setSetting(PENDING_STOP_KEY, stopAt.utc().format())
+        void setSetting(PENDING_STOP_KEY, lastInput.utc().format())
     }
 }
 
-function handleUnblock(reason: string) {
-    if (!systemBlocked) return
+function handleUnblocked({ blockedAt, lastInput, unblockedAt, gapIsIdle }: UnblockInfo) {
     systemBlocked = false
 
-    const blockStart = blockedAt
-    const stopTime = stopAt
-    blockedAt = null
-    stopAt = null
     if (pendingStopPersisted) {
         pendingStopPersisted = false
         void setSetting(PENDING_STOP_KEY, '')
     }
-    if (!blockStart || !stopTime) return
-
-    const now = dayjs()
-    console.log(`Workday monitor unblocked: ${reason}`)
 
     // Same-window rule: a block contained within one workday window is a
     // normal mid-day break (the idle monitor handles it); a block crossing
     // the boundary stops the timer at the last input before the block.
-    if (isWorkdayTrackingEnabled() && isTimerRunning() && !isSameWorkdayWindow(blockStart, now)) {
-        console.log(`Block crossed the workday boundary, stopping timer at ${stopTime.format()}`)
-        suppressNextIdleDialog()
-        getMainWindow()?.webContents.send('stopTimer', stopTime.utc().format())
+    if (
+        isWorkdayTrackingEnabled() &&
+        isTimerRunning() &&
+        !isSameWorkdayWindow(blockedAt, unblockedAt)
+    ) {
+        console.log(`Block crossed the workday boundary, stopping timer at ${lastInput.format()}`)
+        if (gapIsIdle) {
+            // The auto-stop decides the timer's fate for this gap; the idle
+            // keep/discard dialog must not also ask about it
+            suppressNextIdleDialog()
+        }
+        getMainWindow()?.webContents.send('stopTimer', lastInput.utc().format())
     }
 
     // An input gap below the idle threshold is continuous activity — the
-    // streak survives, consistent with the idle monitor's gap rule (measured
-    // from the last input, so pre-block keyboard idle counts)
-    if (now.diff(stopTime, 'second') >= getIdleThresholdSeconds()) {
+    // streak survives, consistent with the presence gap rule
+    if (gapIsIdle) {
         resetStreak()
+    }
+}
+
+// A shutdown never unblocks; persist the stop time and decide on next launch
+function handleShutdown() {
+    if (isWorkdayTrackingEnabled() && isTimerRunning()) {
+        void setSetting(PENDING_STOP_KEY, lastInputTime().utc().format())
     }
 }
 
@@ -219,6 +186,13 @@ function startWorkdayMonitoring() {
 
     console.log('Starting workday monitoring')
     resetStreak()
+    unsubscribePresence = subscribePresence({
+        // A pause long enough to count as idle breaks the streak
+        onIdleStart: () => resetStreak(),
+        onBlocked: handleBlocked,
+        onUnblocked: handleUnblocked,
+        onShutdown: handleShutdown,
+    })
     workdayInterval = setInterval(workdayTick, TICK_INTERVAL_MS)
 }
 
@@ -227,6 +201,11 @@ function stopWorkdayMonitoring() {
         clearInterval(workdayInterval)
         workdayInterval = null
     }
+    if (unsubscribePresence) {
+        unsubscribePresence()
+        unsubscribePresence = null
+    }
+    systemBlocked = false
     resetStreak()
 }
 
@@ -239,8 +218,9 @@ function resetStreak() {
 function workdayTick() {
     const now = dayjs()
 
-    // While blocked, the streak's fate is decided by the unblock handler
-    if (systemBlocked) return
+    // While blocked, the streak's fate is decided by the unblock handler;
+    // while idle, the streak was already reset when the idle period began
+    if (systemBlocked || isUserIdle()) return
 
     // While a timer runs, keep the floor at "now" so that when it stops, the
     // next streak starts at the stop time and the backdated entry can't
@@ -250,18 +230,11 @@ function workdayTick() {
         return
     }
 
-    const idleSince = lastInputTime()
-    if (now.diff(idleSince, 'second') >= getIdleThresholdSeconds()) {
-        // Pause long enough to count as idle breaks the streak
-        resetStreak()
-        return
-    }
-
     // The streak accumulates regardless of the schedule — the schedule gates
     // only prompting, so pre-window activity is prompted for (and backdated
     // to) the moment the window opens
     if (activeSince === null) {
-        let candidate = idleSince
+        let candidate = lastInputTime()
         if (streakFloor && candidate.isBefore(streakFloor)) candidate = streakFloor
         activeSince = candidate
     }

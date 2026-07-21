@@ -6,17 +6,18 @@ const mocks = vi.hoisted(() => ({
     ipcMainOn: vi.fn(),
     ipcMainHandle: vi.fn(),
     showMessageBox: vi.fn(),
+    appQuit: vi.fn(),
     flashFrame: vi.fn(),
     webContentsSend: vi.fn(),
     getAppSettings: vi.fn(),
     getSetting: vi.fn(),
     setSetting: vi.fn(),
-    getIdleThresholdSeconds: vi.fn(() => 300),
     suppressNextIdleDialog: vi.fn(),
     isTimerRunning: vi.fn(() => false),
 }))
 
 vi.mock('electron', () => ({
+    app: { quit: mocks.appQuit },
     powerMonitor: {
         on: mocks.powerMonitorOn,
         getSystemIdleTime: mocks.getSystemIdleTime,
@@ -43,15 +44,11 @@ vi.mock('../settings', () => ({
     setSetting: mocks.setSetting,
 }))
 
-vi.mock('../idleMonitor', async () => {
-    const { default: dayjs } = await import('dayjs')
-    return {
-        getIdleThresholdSeconds: mocks.getIdleThresholdSeconds,
-        suppressNextIdleDialog: mocks.suppressNextIdleDialog,
-        // Mirror the real implementation against the mocked system idle time
-        lastInputTime: () => dayjs().subtract(mocks.getSystemIdleTime(), 'seconds'),
-    }
-})
+// The presence module is real: it computes gaps from the mocked system idle
+// time and power events. Only the idle dialog policy is mocked out.
+vi.mock('../idleMonitor', () => ({
+    suppressNextIdleDialog: mocks.suppressNextIdleDialog,
+}))
 
 vi.mock('../timerState', () => ({
     isTimerRunning: mocks.isTimerRunning,
@@ -103,6 +100,8 @@ async function initialize(settingsOverrides = {}, startTime: Date = WEDNESDAY_10
         ...DEFAULT_WORKDAY_SETTINGS,
         ...settingsOverrides,
     })
+    const { initializePresence } = await import('../presence')
+    await initializePresence()
     const { initializeWorkdayMonitor } = await import('../workdayMonitor')
     await initializeWorkdayMonitor()
 }
@@ -117,7 +116,6 @@ describe('workdayMonitor reminder', () => {
         vi.clearAllMocks()
         vi.useFakeTimers()
         mocks.getSystemIdleTime.mockReturnValue(0)
-        mocks.getIdleThresholdSeconds.mockReturnValue(300)
         mocks.isTimerRunning.mockReturnValue(false)
         mocks.getSetting.mockResolvedValue(null)
         mocks.setSetting.mockResolvedValue(undefined)
@@ -333,7 +331,6 @@ describe('workdayMonitor boundary auto-stop', () => {
         vi.clearAllMocks()
         vi.useFakeTimers()
         mocks.getSystemIdleTime.mockReturnValue(0)
-        mocks.getIdleThresholdSeconds.mockReturnValue(300)
         mocks.isTimerRunning.mockReturnValue(true)
         mocks.getSetting.mockResolvedValue(null)
         mocks.setSetting.mockResolvedValue(undefined)

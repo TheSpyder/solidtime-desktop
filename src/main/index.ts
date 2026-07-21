@@ -8,6 +8,7 @@ import { initializeMainWindow, registerMainWindowListeners } from './mainWindow'
 import { initializeMiniWindow, registerMiniWindowListeners } from './miniWindow'
 import { registerDeeplinkListeners } from './deeplink'
 import { registerVueDevTools } from './devtools'
+import { initializePresence } from './presence'
 import { initializeIdleMonitor } from './idleMonitor'
 import { initializeWorkdayMonitor } from './workdayMonitor'
 import { registerTimerStateListener } from './timerState'
@@ -185,7 +186,9 @@ app.whenReady().then(async () => {
     })
 
     createWindow()
-    // The workday monitor must register first
+    // The presence signal must exist before its consumers subscribe; the
+    // three consumers can initialize in any order
+    await initializePresence()
     await initializeWorkdayMonitor()
     await initializeIdleMonitor()
     await initializeActivityTracker()

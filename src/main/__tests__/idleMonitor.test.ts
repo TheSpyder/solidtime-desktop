@@ -81,6 +81,8 @@ async function initialize() {
         idleDetectionEnabled: true,
         idleThresholdMinutes: 5,
     })
+    const presence = await import('../presence')
+    await presence.initializePresence()
     const idleMonitor = await import('../idleMonitor')
     await idleMonitor.initializeIdleMonitor()
     return idleMonitor

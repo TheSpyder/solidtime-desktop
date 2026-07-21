@@ -5,11 +5,16 @@ import { hasScreenRecordingPermission } from './permissions'
 import { ipcMain } from 'electron'
 import { logger } from './logger'
 import { isSameWindowActivity, type ActivityBackend, type WindowInfo } from './activity/backend'
+import { isUserIdle, subscribePresence } from './presence'
 
 let activityTrackingEnabled = false
 let backend: ActivityBackend | null = null
 let lastWindowInfo: WindowInfo | null = null
 let currentActivityStartTime: Date | null = null
+let unsubscribePresence: (() => void) | null = null
+// While the user is away (idle or system blocked), window changes update the
+// focused window but must not accumulate time
+let trackingPaused = false
 
 /**
  * Resets the current activity start time to now.
@@ -139,6 +144,7 @@ export async function startActivityTracking(): Promise<void> {
             void handleWindowChange(windowInfo)
         })
         backend = chosen
+        subscribeToPresence()
         logger.info('Activity tracking started')
     } catch (error) {
         logger.error('Failed to start activity backend:', error)
@@ -148,6 +154,68 @@ export async function startActivityTracking(): Promise<void> {
         } catch {
             // ignore
         }
+    }
+}
+
+/**
+ * Follows the shared presence signal so a window activity can never span
+ * time the user wasn't there for: the current activity is closed at the last
+ * input when the user goes idle or the system blocks, and reopened when they
+ * return. A sub-threshold gap (short sleep or lock) resumes at the point the
+ * activity was closed, so the two records join up as continuous activity —
+ * the same rule the activity periods follow.
+ */
+function subscribeToPresence() {
+    unsubscribePresence = subscribePresence({
+        onIdleStart: (idleStart) => pauseTracking(idleStart.toDate()),
+        onIdleEnd: (_idleStart, idleEnd) => resumeTracking(idleEnd.toDate()),
+        onBlocked: ({ lastInput }) => pauseTracking(lastInput.toDate()),
+        // An idle-classified gap is resumed by its matching onIdleEnd; only
+        // a continuous (sub-threshold) gap needs joining up here
+        onUnblocked: ({ lastInput, gapIsIdle }) => {
+            if (!gapIsIdle) {
+                resumeTracking(lastInput.toDate())
+            }
+        },
+    })
+    // The user may already be away when tracking starts
+    trackingPaused = isUserIdle()
+}
+
+/**
+ * The user went away at `at`: save the current window activity ending there
+ * and stop accumulating until they return.
+ */
+function pauseTracking(at: Date): void {
+    if (trackingPaused) {
+        return
+    }
+    trackingPaused = true
+
+    // Mutate the tracking state synchronously — a resume may follow in the
+    // same event dispatch, and only the database write may lag behind it
+    const windowInfo = lastWindowInfo
+    const startTime = currentActivityStartTime
+    currentActivityStartTime = null
+
+    if (windowInfo && startTime && activityTrackingEnabled) {
+        saveWindowActivity(windowInfo, startTime, at).catch((error) => {
+            logger.error('Failed to save window activity on pause:', error)
+        })
+    }
+}
+
+/**
+ * The user is back: resume the focused window's activity from `at`.
+ */
+function resumeTracking(at: Date): void {
+    if (!trackingPaused) {
+        return
+    }
+    trackingPaused = false
+
+    if (lastWindowInfo) {
+        currentActivityStartTime = at
     }
 }
 
@@ -177,7 +245,7 @@ async function handleWindowChange(windowInfo: WindowInfo): Promise<void> {
     }
 
     lastWindowInfo = windowInfo
-    if (!currentActivityStartTime) {
+    if (!currentActivityStartTime && !trackingPaused) {
         currentActivityStartTime = new Date()
     }
 }
@@ -285,6 +353,11 @@ export async function stopActivityTracking(): Promise<void> {
     // Save the current window activity before stopping
     await saveCurrentActivityIfNeeded()
 
+    if (unsubscribePresence) {
+        unsubscribePresence()
+        unsubscribePresence = null
+    }
+
     if (backend) {
         try {
             await backend.stop()
@@ -296,6 +369,7 @@ export async function stopActivityTracking(): Promise<void> {
 
     lastWindowInfo = null
     currentActivityStartTime = null
+    trackingPaused = false
 
     logger.info('Activity tracking stopped')
 }
