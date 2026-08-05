@@ -1,12 +1,12 @@
-export async function listenForBackendEvent(event: string, callback: () => void) {
+export async function listenForBackendEvent(event: string, callback: (value?: string) => void) {
     if (event === 'startTimer') {
         window.electronAPI.onStartTimer(() => {
             callback()
         })
     }
     if (event === 'stopTimer') {
-        window.electronAPI.onStopTimer(() => {
-            callback()
+        window.electronAPI.onStopTimer((endTime?: string) => {
+            callback(endTime)
         })
     }
     if (event === 'startBreak') {

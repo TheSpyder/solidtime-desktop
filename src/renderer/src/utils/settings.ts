@@ -7,6 +7,11 @@ export interface AppSettings {
     idleThresholdMinutes: number
     activityTrackingEnabled: boolean
     errorReportingEnabled: boolean
+    workdayTrackingEnabled: boolean
+    workdayReminderThresholdMinutes: number
+    workdayDays: number[]
+    workdayStartTime: string
+    workdayEndTime: string
 }
 
 // Reactive settings that sync with the database
@@ -16,6 +21,11 @@ export const idleDetectionEnabled = ref(true)
 export const idleThresholdMinutes = ref(5)
 export const activityTrackingEnabled = ref(false) // Off by default
 export const errorReportingEnabled = ref(false) // Off by default
+export const workdayTrackingEnabled = ref(false) // Off by default
+export const workdayReminderThresholdMinutes = ref(10)
+export const workdayDays = ref<number[]>([1, 2, 3, 4, 5]) // Mon-Fri, 0 = Sunday
+export const workdayStartTime = ref('09:00')
+export const workdayEndTime = ref('17:00')
 
 let isInitialized = false
 
@@ -34,6 +44,11 @@ export async function initializeSettings() {
             idleThresholdMinutes.value = result.data.idleThresholdMinutes
             activityTrackingEnabled.value = result.data.activityTrackingEnabled
             errorReportingEnabled.value = result.data.errorReportingEnabled
+            workdayTrackingEnabled.value = result.data.workdayTrackingEnabled
+            workdayReminderThresholdMinutes.value = result.data.workdayReminderThresholdMinutes
+            workdayDays.value = result.data.workdayDays
+            workdayStartTime.value = result.data.workdayStartTime
+            workdayEndTime.value = result.data.workdayEndTime
         }
 
         isInitialized = true
@@ -66,6 +81,35 @@ export async function initializeSettings() {
         watch(errorReportingEnabled, (value) => {
             updateSetting({ errorReportingEnabled: value })
         })
+
+        watch(workdayTrackingEnabled, (value) => {
+            updateSetting({ workdayTrackingEnabled: value })
+            updateWorkdaySettings()
+        })
+
+        watch(workdayReminderThresholdMinutes, (value) => {
+            updateSetting({ workdayReminderThresholdMinutes: value })
+            updateWorkdaySettings()
+        })
+
+        watch(
+            workdayDays,
+            (value) => {
+                updateSetting({ workdayDays: [...value] })
+                updateWorkdaySettings()
+            },
+            { deep: true }
+        )
+
+        watch(workdayStartTime, (value) => {
+            updateSetting({ workdayStartTime: value })
+            updateWorkdaySettings()
+        })
+
+        watch(workdayEndTime, (value) => {
+            updateSetting({ workdayEndTime: value })
+            updateWorkdaySettings()
+        })
     } catch (error) {
         console.error('Failed to initialize settings:', error)
     }
@@ -83,4 +127,17 @@ async function updateSetting(partialSettings: Partial<AppSettings>) {
     } catch (error) {
         console.error('Failed to update settings:', error)
     }
+}
+
+/**
+ * Push the full workday config to the main process monitor
+ */
+function updateWorkdaySettings() {
+    window.electronAPI.updateWorkdaySettings({
+        enabled: workdayTrackingEnabled.value,
+        reminderThresholdMinutes: workdayReminderThresholdMinutes.value,
+        days: [...workdayDays.value],
+        startTime: workdayStartTime.value,
+        endTime: workdayEndTime.value,
+    })
 }

@@ -12,6 +12,11 @@ export interface AppSettings {
     idleThresholdMinutes: number
     activityTrackingEnabled: boolean
     errorReportingEnabled: boolean
+    workdayTrackingEnabled: boolean
+    workdayReminderThresholdMinutes: number
+    workdayDays: number[] // Days of week, 0 = Sunday (dayjs convention)
+    workdayStartTime: string // 'HH:mm' local time
+    workdayEndTime: string // 'HH:mm' local time
 }
 
 // Default settings
@@ -22,6 +27,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     idleThresholdMinutes: 5,
     activityTrackingEnabled: false, // Off by default for privacy
     errorReportingEnabled: false, // Off by default for privacy
+    workdayTrackingEnabled: false, // Off by default to not be annoying
+    workdayReminderThresholdMinutes: 10,
+    workdayDays: [1, 2, 3, 4, 5], // Monday to Friday
+    workdayStartTime: '09:00',
+    workdayEndTime: '17:00',
 }
 
 // Setting keys used in the database
@@ -32,7 +42,46 @@ const SETTING_KEYS = {
     IDLE_THRESHOLD_MINUTES: 'idle_threshold_minutes',
     ACTIVITY_TRACKING_ENABLED: 'activity_tracking_enabled',
     ERROR_REPORTING_ENABLED: 'error_reporting_enabled',
+    WORKDAY_TRACKING_ENABLED: 'workday_tracking_enabled',
+    WORKDAY_REMINDER_THRESHOLD_MINUTES: 'workday_reminder_threshold_minutes',
+    WORKDAY_DAYS: 'workday_days',
+    WORKDAY_START_TIME: 'workday_start_time',
+    WORKDAY_END_TIME: 'workday_end_time',
 } as const
+
+/**
+ * Parses a stored days-of-week value (JSON array of 0-6) with fallback
+ */
+function parseWorkdayDays(value: string | null): number[] {
+    if (value != null) {
+        try {
+            const parsed = JSON.parse(value)
+            if (
+                Array.isArray(parsed) &&
+                parsed.every((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+            ) {
+                return parsed
+            }
+        } catch {
+            // fall through to default
+        }
+        console.warn(`Invalid workday days '${value}', using default.`)
+    }
+    return DEFAULT_SETTINGS.workdayDays
+}
+
+/**
+ * Validates a stored 'HH:mm' time-of-day value with fallback
+ */
+function parseWorkdayTime(value: string | null, fallback: string): string {
+    if (value != null) {
+        if (/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+            return value
+        }
+        console.warn(`Invalid workday time '${value}', using default.`)
+    }
+    return fallback
+}
 
 /**
  * Reads the error reporting preference synchronously during application startup.
@@ -56,7 +105,7 @@ export function getErrorReportingEnabledAtStartup(): boolean {
 /**
  * Gets a setting value from the database
  */
-async function getSetting(key: string): Promise<string | null> {
+export async function getSetting(key: string): Promise<string | null> {
     try {
         const result = await db.select().from(settings).where(eq(settings.key, key)).limit(1)
 
@@ -74,7 +123,7 @@ async function getSetting(key: string): Promise<string | null> {
 /**
  * Sets a setting value in the database
  */
-async function setSetting(key: string, value: string): Promise<void> {
+export async function setSetting(key: string, value: string): Promise<void> {
     try {
         const existing = await getSetting(key)
 
@@ -117,6 +166,11 @@ export async function getAppSettings(): Promise<AppSettings> {
             idleThresholdMinutes,
             activityTrackingEnabled,
             errorReportingEnabled,
+            workdayTrackingEnabled,
+            workdayReminderThresholdMinutes,
+            workdayDays,
+            workdayStartTime,
+            workdayEndTime,
         ] = await Promise.all([
             getSetting(SETTING_KEYS.WIDGET_ACTIVATED),
             getSetting(SETTING_KEYS.TRAY_TIMER_ACTIVATED),
@@ -124,6 +178,11 @@ export async function getAppSettings(): Promise<AppSettings> {
             getSetting(SETTING_KEYS.IDLE_THRESHOLD_MINUTES),
             getSetting(SETTING_KEYS.ACTIVITY_TRACKING_ENABLED),
             getSetting(SETTING_KEYS.ERROR_REPORTING_ENABLED),
+            getSetting(SETTING_KEYS.WORKDAY_TRACKING_ENABLED),
+            getSetting(SETTING_KEYS.WORKDAY_REMINDER_THRESHOLD_MINUTES),
+            getSetting(SETTING_KEYS.WORKDAY_DAYS),
+            getSetting(SETTING_KEYS.WORKDAY_START_TIME),
+            getSetting(SETTING_KEYS.WORKDAY_END_TIME),
         ])
 
         return {
@@ -151,6 +210,17 @@ export async function getAppSettings(): Promise<AppSettings> {
                 errorReportingEnabled !== null
                     ? errorReportingEnabled === 'true'
                     : DEFAULT_SETTINGS.errorReportingEnabled,
+            workdayTrackingEnabled:
+                workdayTrackingEnabled !== null
+                    ? workdayTrackingEnabled === 'true'
+                    : DEFAULT_SETTINGS.workdayTrackingEnabled,
+            workdayReminderThresholdMinutes:
+                workdayReminderThresholdMinutes !== null
+                    ? parseInt(workdayReminderThresholdMinutes, 10)
+                    : DEFAULT_SETTINGS.workdayReminderThresholdMinutes,
+            workdayDays: parseWorkdayDays(workdayDays),
+            workdayStartTime: parseWorkdayTime(workdayStartTime, DEFAULT_SETTINGS.workdayStartTime),
+            workdayEndTime: parseWorkdayTime(workdayEndTime, DEFAULT_SETTINGS.workdayEndTime),
         }
     } catch (error) {
         console.error('Failed to get app settings, using defaults:', error)
@@ -219,6 +289,40 @@ export async function updateAppSettings(
                     String(partialSettings.errorReportingEnabled)
                 )
             )
+        }
+
+        if (partialSettings.workdayTrackingEnabled !== undefined) {
+            promises.push(
+                setSetting(
+                    SETTING_KEYS.WORKDAY_TRACKING_ENABLED,
+                    String(partialSettings.workdayTrackingEnabled)
+                )
+            )
+        }
+
+        if (partialSettings.workdayReminderThresholdMinutes !== undefined) {
+            promises.push(
+                setSetting(
+                    SETTING_KEYS.WORKDAY_REMINDER_THRESHOLD_MINUTES,
+                    String(partialSettings.workdayReminderThresholdMinutes)
+                )
+            )
+        }
+
+        if (partialSettings.workdayDays !== undefined) {
+            promises.push(
+                setSetting(SETTING_KEYS.WORKDAY_DAYS, JSON.stringify(partialSettings.workdayDays))
+            )
+        }
+
+        if (partialSettings.workdayStartTime !== undefined) {
+            promises.push(
+                setSetting(SETTING_KEYS.WORKDAY_START_TIME, partialSettings.workdayStartTime)
+            )
+        }
+
+        if (partialSettings.workdayEndTime !== undefined) {
+            promises.push(setSetting(SETTING_KEYS.WORKDAY_END_TIME, partialSettings.workdayEndTime))
         }
 
         await Promise.all(promises)

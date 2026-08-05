@@ -5,6 +5,19 @@ export interface AppSettings {
     idleThresholdMinutes: number
     activityTrackingEnabled: boolean
     errorReportingEnabled: boolean
+    workdayTrackingEnabled: boolean
+    workdayReminderThresholdMinutes: number
+    workdayDays: number[]
+    workdayStartTime: string
+    workdayEndTime: string
+}
+
+export interface WorkdaySettings {
+    enabled: boolean
+    reminderThresholdMinutes: number
+    days: number[]
+    startTime: string
+    endTime: string
 }
 
 export interface WindowActivityStats {
@@ -47,7 +60,7 @@ export interface IElectronAPI {
     onOpenDeeplink: (callback: (url: string) => Promise<void>) => void
     onAutoUpdaterError: (callback: (error: string | undefined) => Promise<void>) => void
     onStartTimer: (callback: () => void) => void
-    onStopTimer: (callback: () => void) => void
+    onStopTimer: (callback: (endTime?: string) => void) => void
     onStartBreak: (callback: () => void) => void
     onResumeAfterBreak: (callback: () => void) => void
     updateTrayState: (timeEntry: string, showTimer: boolean) => void
@@ -55,9 +68,15 @@ export interface IElectronAPI {
     updateIdleThreshold: (thresholdMinutes: number) => void
     updateIdleDetectionEnabled: (enabled: boolean) => void
     updateActivityTrackingEnabled: (enabled: boolean) => void
+    updateWorkdaySettings: (settings: WorkdaySettings) => void
+    getPendingWorkdayStop: () => Promise<string | null>
     timerStateChanged: (running: boolean) => void
+    connectionStateChanged: (connected: boolean) => void
     onIdleDialogResponse: (
         callback: (data: { choice: number; idleStartTime: string; idleEndTime: string }) => void
+    ) => () => void // Returns cleanup function to remove listener
+    onWorkdayReminderResponse: (
+        callback: (data: { choice: number; activeSince: string }) => void
     ) => () => void // Returns cleanup function to remove listener
     getActivityTrackingSupport: () => Promise<{ supported: boolean; reason?: string }>
     getSettings: () => Promise<{ success: boolean; data?: AppSettings; error?: string }>

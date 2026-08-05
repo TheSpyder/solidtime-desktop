@@ -105,6 +105,12 @@ watch(
     { immediate: true }
 )
 
+// Notify main process once the server connection is up, so the presence
+// monitors never prompt to start a timer that could not be saved
+watch(isMeLoaded, (connected) => window.electronAPI?.connectionStateChanged?.(connected), {
+    immediate: true,
+})
+
 onMounted(async () => {
     initializeAuth(queryClient)
     useTheme()
@@ -118,8 +124,8 @@ onMounted(async () => {
     await listenForBackendEvent('startTimer', () => {
         continueLastTimer()
     })
-    await listenForBackendEvent('stopTimer', () => {
-        stopTimer()
+    await listenForBackendEvent('stopTimer', (endTime?: string) => {
+        stopTimer(endTime)
     })
     await listenForBackendEvent('startBreak', () => {
         startBreak()
@@ -136,6 +142,25 @@ onMounted(async () => {
         window.electronAPI.onIdleDialogResponse((data) => {
             handleIdleDialogResponse(data.choice, data.idleStartTime)
         })
+    }
+
+    // Listen for workday reminder response from main process
+    if (window.electronAPI?.onWorkdayReminderResponse) {
+        window.electronAPI.onWorkdayReminderResponse((data) => {
+            if (data.choice === 0 && !isActive.value) {
+                // Start a timer backdated to the beginning of the activity streak
+                continueLastTimer(data.activeSince)
+            }
+        })
+    }
+
+    // A block (sleep/shutdown) in a previous session may have crossed a
+    // workday boundary; collect the resulting stop now that we can handle it
+    if (window.electronAPI?.getPendingWorkdayStop) {
+        const pendingStop = await window.electronAPI.getPendingWorkdayStop()
+        if (pendingStop && isActive.value) {
+            await stopTimer(pendingStop)
+        }
     }
 })
 

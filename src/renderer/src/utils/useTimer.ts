@@ -143,10 +143,11 @@ export function useTimer() {
     /**
      * Continue the last timer.
      * Starts a new timer using the values from lastTimeEntry (description, project, task, etc.).
-     * Used when starting a timer from the widget, tray, or after discarding idle time.
+     * Used when starting a timer from the widget, tray, after discarding idle
+     * time, or accepting the workday reminder backdated to the activity streak start.
      */
-    function continueLastTimer() {
-        const startTime = dayjs().utc().format()
+    function continueLastTimer(customStartTime?: string) {
+        const startTime = customStartTime ?? dayjs().utc().format()
 
         if (lastTimeEntry.value && lastTimeEntry.value.start) {
             currentTimeEntry.value = {

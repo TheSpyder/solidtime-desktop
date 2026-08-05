@@ -42,7 +42,12 @@ if (process.contextIsolated || true) {
                 ipcRenderer.send('updateIdleDetectionEnabled', enabled),
             updateActivityTrackingEnabled: (enabled: boolean) =>
                 ipcRenderer.invoke('updateActivityTrackingEnabled', enabled),
+            updateWorkdaySettings: (settings) =>
+                ipcRenderer.send('updateWorkdaySettings', settings),
+            getPendingWorkdayStop: () => ipcRenderer.invoke('getPendingWorkdayStop'),
             timerStateChanged: (running: boolean) => ipcRenderer.send('timerStateChanged', running),
+            connectionStateChanged: (connected: boolean) =>
+                ipcRenderer.send('connectionStateChanged', connected),
             getWindowActivityStats: (startDate: string, endDate: string) =>
                 ipcRenderer.invoke('getWindowActivityStats', startDate, endDate),
             getAppIcon: (appName: string) => ipcRenderer.invoke('getAppIcon', appName),
@@ -53,6 +58,12 @@ if (process.contextIsolated || true) {
                 ipcRenderer.on('idleDialogResponse', listener)
                 // Return cleanup function to remove the listener
                 return () => ipcRenderer.removeListener('idleDialogResponse', listener)
+            },
+            onWorkdayReminderResponse: (callback) => {
+                const listener = (_event, value) => callback(value)
+                ipcRenderer.on('workdayReminderResponse', listener)
+                // Return cleanup function to remove the listener
+                return () => ipcRenderer.removeListener('workdayReminderResponse', listener)
             },
             getActivityTrackingSupport: () => ipcRenderer.invoke('getActivityTrackingSupport'),
             getSettings: () => ipcRenderer.invoke('getSettings'),

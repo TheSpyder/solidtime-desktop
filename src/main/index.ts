@@ -12,7 +12,11 @@ import { initializeMainWindow, registerMainWindowListeners, getMainWindow } from
 import { initializeMiniWindow, registerMiniWindowListeners } from './miniWindow'
 import { registerDeeplinkListeners } from './deeplink'
 import { registerVueDevTools } from './devtools'
+import { initializePresence } from './presence'
 import { initializeIdleMonitor } from './idleMonitor'
+import { initializeWorkdayMonitor } from './workdayMonitor'
+import { registerTimerStateListener } from './timerState'
+import { registerConnectionStateListener } from './connectionState'
 import { runMigrations } from './db/migrate'
 import { registerActivityPeriodListeners } from './activityPeriods'
 import { registerSettingsListeners, getErrorReportingEnabledAtStartup } from './settings'
@@ -157,6 +161,8 @@ app.whenReady().then(async () => {
     // Register IPC handlers
     registerActivityPeriodListeners()
     registerSettingsListeners()
+    registerTimerStateListener()
+    registerConnectionStateListener()
     registerWindowActivitiesHandlers()
     registerAppIconHandlers()
     registerXWinExtensionHandlers()
@@ -212,6 +218,10 @@ app.whenReady().then(async () => {
         app.quit()
     })
 
+    // The presence signal must exist before its consumers subscribe; the
+    // idle monitor and workday monitor can then initialize in any order
+    await initializePresence()
+    await initializeWorkdayMonitor()
     await initializeIdleMonitor()
     await initializeActivityTracker()
 
