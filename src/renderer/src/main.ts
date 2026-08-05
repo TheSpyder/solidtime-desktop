@@ -4,6 +4,14 @@ import './style.css'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import router from './router'
 import { setupQuerySync } from './utils/querySync'
+import { useStorage } from '@vueuse/core'
+import { emptyTimeEntry } from './utils/timeEntries'
+
+// A locally-persisted timer must never resurrect without the server
+// confirming it first — each launch starts blank until the reconciliation
+// query answers. Runs before any component reads these keys.
+useStorage('currentTimeEntry', { ...emptyTimeEntry }).value = null
+useStorage('lastTimeEntry', { ...emptyTimeEntry }).value = null
 
 const app = createApp(App)
 
