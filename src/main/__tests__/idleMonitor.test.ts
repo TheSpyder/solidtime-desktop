@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
     webContentsSend: vi.fn(),
     getAppSettings: vi.fn(),
     isTimerRunning: vi.fn(() => true),
+    isSessionActive: vi.fn(() => true),
+    onSessionStateChanged: vi.fn(),
     dbInsertValues: vi.fn(async () => {}),
 }))
 
@@ -40,6 +42,11 @@ vi.mock('../settings', () => ({
 
 vi.mock('../timerState', () => ({
     isTimerRunning: mocks.isTimerRunning,
+}))
+
+vi.mock('../connectionState', () => ({
+    isSessionActive: mocks.isSessionActive,
+    onSessionStateChanged: mocks.onSessionStateChanged,
 }))
 
 vi.mock('../db/client', () => ({
@@ -75,6 +82,12 @@ function getPowerHandler(event: string): () => void {
     return call[1]
 }
 
+function getSessionListener(): (active: boolean) => void {
+    const call = mocks.onSessionStateChanged.mock.calls[0]
+    if (!call) throw new Error('No session state listener registered')
+    return call[0]
+}
+
 async function initialize() {
     vi.setSystemTime(WEDNESDAY_10AM)
     mocks.getAppSettings.mockResolvedValue({
@@ -99,6 +112,7 @@ describe('idleMonitor threshold-aware blocks', () => {
         vi.useFakeTimers()
         mocks.getSystemIdleTime.mockReturnValue(0)
         mocks.isTimerRunning.mockReturnValue(true)
+        mocks.isSessionActive.mockReturnValue(true)
         mocks.showMessageBox.mockResolvedValue({ response: 0 }) // "Keep Idle Time"
     })
 
@@ -301,5 +315,77 @@ describe('idleMonitor threshold-aware blocks', () => {
 
         expect(mocks.showMessageBox).not.toHaveBeenCalled()
         expect(savedIdlePeriods()).toHaveLength(1)
+    })
+
+    it('does not prompt or record before the session start signal', async () => {
+        mocks.isSessionActive.mockReturnValue(false)
+        await initialize()
+
+        await advanceMinutes(1)
+        getPowerHandler('suspend')()
+        await advanceMinutes(10)
+        getPowerHandler('resume')()
+        await vi.advanceTimersByTimeAsync(100)
+
+        expect(mocks.showMessageBox).not.toHaveBeenCalled()
+        expect(savedPeriods()).toHaveLength(0)
+    })
+
+    it('the settings toggle alone does not start monitoring without a session', async () => {
+        mocks.isSessionActive.mockReturnValue(false)
+        await initialize()
+
+        const call = mocks.ipcMainOn.mock.calls.find(
+            ([channel]) => channel === 'updateIdleDetectionEnabled'
+        )
+        if (!call) throw new Error('No updateIdleDetectionEnabled handler registered')
+        call[1](null, true)
+
+        await advanceMinutes(1)
+        getPowerHandler('suspend')()
+        await advanceMinutes(10)
+        getPowerHandler('resume')()
+        await vi.advanceTimersByTimeAsync(100)
+
+        expect(mocks.showMessageBox).not.toHaveBeenCalled()
+        expect(savedPeriods()).toHaveLength(0)
+    })
+
+    it('starts monitoring on the session start signal', async () => {
+        mocks.isSessionActive.mockReturnValue(false)
+        await initialize()
+
+        mocks.isSessionActive.mockReturnValue(true)
+        getSessionListener()(true)
+
+        await advanceMinutes(1)
+        getPowerHandler('suspend')()
+        await advanceMinutes(10)
+        getPowerHandler('resume')()
+        await vi.advanceTimersByTimeAsync(100)
+
+        expect(mocks.showMessageBox).toHaveBeenCalledTimes(1)
+        expect(savedIdlePeriods()).toHaveLength(1)
+    })
+
+    it('stops monitoring on the logout signal', async () => {
+        await initialize()
+
+        // The active period accumulated while logged in is saved at logout
+        await advanceMinutes(5)
+        mocks.isSessionActive.mockReturnValue(false)
+        getSessionListener()(false)
+        await vi.advanceTimersByTimeAsync(100)
+        expect(savedPeriods()).toHaveLength(1)
+        expect(savedPeriods()[0].isIdle).toBe(false)
+
+        mocks.dbInsertValues.mockClear()
+        getPowerHandler('suspend')()
+        await advanceMinutes(10)
+        getPowerHandler('resume')()
+        await vi.advanceTimersByTimeAsync(100)
+
+        expect(mocks.showMessageBox).not.toHaveBeenCalled()
+        expect(savedPeriods()).toHaveLength(0)
     })
 })

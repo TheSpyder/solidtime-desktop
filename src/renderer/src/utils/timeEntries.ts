@@ -8,6 +8,21 @@ import type {
 import { useMutation, useQueryClient } from '@tanstack/vue-query'
 import type { InfiniteData } from '@tanstack/vue-query'
 import { useMyMemberships } from './myMemberships.ts'
+import { isNetworkError, reportServerUnreachable } from './reachability.ts'
+
+/**
+ * Retry policy for the optimistic timer mutations: a network error flips the
+ * onlineManager offline, so the pending retry pauses (networkMode 'online')
+ * and resumes — with its originally captured timestamps — once the
+ * reconciliation probe restores reachability. HTTP errors fail immediately.
+ */
+function retryWhileUnreachable(_failureCount: number, error: unknown): boolean {
+    if (isNetworkError(error)) {
+        reportServerUnreachable()
+        return true
+    }
+    return false
+}
 
 export const emptyTimeEntry = {
     id: '',
@@ -92,6 +107,7 @@ export function useTimeEntryStopMutation() {
         scope: {
             id: 'timeEntry',
         },
+        retry: retryWhileUnreachable,
         mutationFn: (timeEntry: TimeEntry) => {
             if (!timeEntry.organization_id) {
                 throw new Error('No organization id on time entry - stop time entry')
@@ -339,6 +355,7 @@ export function useTimeEntryCreateMutation() {
         scope: {
             id: 'timeEntry',
         },
+        retry: retryWhileUnreachable,
         mutationFn: (timeEntry: CreateTimeEntryBody) => {
             if (currentOrganizationId.value === null) {
                 throw new Error('No current organization id - create time entry')

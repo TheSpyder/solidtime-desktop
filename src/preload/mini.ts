@@ -15,6 +15,11 @@ if (process.contextIsolated) {
             startTimer: () => ipcRenderer.send('startTimer'),
             stopTimer: () => ipcRenderer.send('stopTimer'),
             showMainWindow: () => ipcRenderer.send('showMainWindow'),
+            onCurrentTimeEntryChanged: (callback: (serialized: string) => void) =>
+                ipcRenderer.on('currentTimeEntryChanged', (_event, value) => callback(value)),
+            onLastTimeEntryChanged: (callback: (serialized: string) => void) =>
+                ipcRenderer.on('lastTimeEntryChanged', (_event, value) => callback(value)),
+            getTimeEntryState: () => ipcRenderer.invoke('getTimeEntryState'),
         })
     } catch (error) {
         console.error(error)

@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
     setSetting: vi.fn(),
     suppressNextIdleDialog: vi.fn(),
     isTimerRunning: vi.fn(() => false),
+    isSessionActive: vi.fn(() => true),
+    onSessionStateChanged: vi.fn(),
 }))
 
 vi.mock('electron', () => ({
@@ -54,6 +56,11 @@ vi.mock('../timerState', () => ({
     isTimerRunning: mocks.isTimerRunning,
 }))
 
+vi.mock('../connectionState', () => ({
+    isSessionActive: mocks.isSessionActive,
+    onSessionStateChanged: mocks.onSessionStateChanged,
+}))
+
 const DEFAULT_WORKDAY_SETTINGS = {
     widgetActivated: true,
     trayTimerActivated: true,
@@ -74,6 +81,12 @@ function getPowerHandler(event: string): () => void {
     const call = mocks.powerMonitorOn.mock.calls.find(([name]) => name === event)
     if (!call) throw new Error(`No powerMonitor handler registered for ${event}`)
     return call[1]
+}
+
+function getSessionListener(): (active: boolean) => void {
+    const call = mocks.onSessionStateChanged.mock.calls[0]
+    if (!call) throw new Error('No session state listener registered')
+    return call[0]
 }
 
 function getSettingsIpcHandler(): (event: unknown, settings: unknown) => void {
@@ -117,6 +130,7 @@ describe('workdayMonitor reminder', () => {
         vi.useFakeTimers()
         mocks.getSystemIdleTime.mockReturnValue(0)
         mocks.isTimerRunning.mockReturnValue(false)
+        mocks.isSessionActive.mockReturnValue(true)
         mocks.getSetting.mockResolvedValue(null)
         mocks.setSetting.mockResolvedValue(undefined)
         // Dialog stays open unless a test resolves it
@@ -175,6 +189,41 @@ describe('workdayMonitor reminder', () => {
         expect(mocks.showMessageBox).not.toHaveBeenCalled()
         await advanceMinutes(2)
         expect(mocks.showMessageBox).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not prompt before the session start signal, then floors the streak at login', async () => {
+        mocks.showMessageBox.mockResolvedValue({ response: 0 })
+        mocks.isSessionActive.mockReturnValue(false)
+        await initialize()
+
+        // Plenty of pre-login activity, but monitoring has not started
+        await advanceMinutes(30)
+        expect(mocks.showMessageBox).not.toHaveBeenCalled()
+
+        // Login: monitoring starts, and a full threshold is required — the
+        // streak cannot backdate before login
+        const loginTime = Date.now()
+        mocks.isSessionActive.mockReturnValue(true)
+        getSessionListener()(true)
+
+        await advanceMinutes(9)
+        expect(mocks.showMessageBox).not.toHaveBeenCalled()
+        await advanceMinutes(2)
+        expect(mocks.showMessageBox).toHaveBeenCalledTimes(1)
+
+        const payload = sendsTo('workdayReminderResponse')[0][1] as { activeSince: string }
+        expect(new Date(payload.activeSince).getTime()).toBeGreaterThanOrEqual(loginTime)
+    })
+
+    it('stops prompting on the logout signal', async () => {
+        await initialize()
+
+        await advanceMinutes(5)
+        mocks.isSessionActive.mockReturnValue(false)
+        getSessionListener()(false)
+
+        await advanceMinutes(30)
+        expect(mocks.showMessageBox).not.toHaveBeenCalled()
     })
 
     it('does not prompt on unmonitored days', async () => {
@@ -332,6 +381,7 @@ describe('workdayMonitor boundary auto-stop', () => {
         vi.useFakeTimers()
         mocks.getSystemIdleTime.mockReturnValue(0)
         mocks.isTimerRunning.mockReturnValue(true)
+        mocks.isSessionActive.mockReturnValue(true)
         mocks.getSetting.mockResolvedValue(null)
         mocks.setSetting.mockResolvedValue(undefined)
         mocks.showMessageBox.mockReturnValue(new Promise(() => {}))
@@ -455,6 +505,19 @@ describe('workdayMonitor boundary auto-stop', () => {
         expect(stops).toHaveLength(1)
         const endTimeMs = new Date(stops[0][1] as string).getTime()
         expect(Math.abs(endTimeMs - lockTime)).toBeLessThanOrEqual(1000)
+    })
+
+    it('does not auto-stop after the logout signal', async () => {
+        await initialize({}, new Date(2026, 6, 8, 18, 0, 0))
+
+        mocks.isSessionActive.mockReturnValue(false)
+        getSessionListener()(false)
+
+        getPowerHandler('suspend')()
+        await advanceMinutes(30)
+        getPowerHandler('resume')()
+
+        expect(sendsTo('stopTimer')).toHaveLength(0)
     })
 
     it('does not stop anything when no timer is running', async () => {

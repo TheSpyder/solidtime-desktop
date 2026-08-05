@@ -31,6 +31,8 @@ if (process.contextIsolated || true) {
                 ipcRenderer.on('updateError', (_event, value) => callback(value)),
             updateTrayState: (timeEntry: string, showTimer: boolean) =>
                 ipcRenderer.send('updateTrayState', timeEntry, showTimer),
+            updateLastTimeEntry: (timeEntry: string) =>
+                ipcRenderer.send('updateLastTimeEntry', timeEntry),
             updateAutoUpdater: () => ipcRenderer.send('updateAutoUpdater'),
             updateIdleThreshold: (thresholdMinutes: number) =>
                 ipcRenderer.send('updateIdleThreshold', thresholdMinutes),
@@ -42,6 +44,8 @@ if (process.contextIsolated || true) {
             updateActivityTrackingEnabled: (enabled: boolean) =>
                 ipcRenderer.invoke('updateActivityTrackingEnabled', enabled),
             timerStateChanged: (running: boolean) => ipcRenderer.send('timerStateChanged', running),
+            connectionStateChanged: (connected: boolean) =>
+                ipcRenderer.send('connectionStateChanged', connected),
             getWindowActivities: (startDate: string, endDate: string) =>
                 ipcRenderer.invoke('getWindowActivities', startDate, endDate),
             getWindowActivityStats: (startDate: string, endDate: string) =>

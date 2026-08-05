@@ -29,7 +29,27 @@ export function initializeMiniWindow(icon: string) {
     return miniWindow
 }
 
+// Last state pushed by the main window, replayed when the mini window asks
+// for it at startup (its webContents may not exist yet during early pushes)
+let currentTimeEntryState: string | null = null
+let lastTimeEntryState: string | null = null
+
 export function registerMiniWindowListeners(miniWindow: BrowserWindow) {
+    // The 'updateTrayState' message from the main window carries the
+    // serialized current time entry; one message feeds the tray and the
+    // mini window
+    ipcMain.on('updateTrayState', (_event, serializedTimeEntry: string) => {
+        currentTimeEntryState = serializedTimeEntry
+        miniWindow.webContents.send('currentTimeEntryChanged', serializedTimeEntry)
+    })
+    ipcMain.on('updateLastTimeEntry', (_event, serializedTimeEntry: string) => {
+        lastTimeEntryState = serializedTimeEntry
+        miniWindow.webContents.send('lastTimeEntryChanged', serializedTimeEntry)
+    })
+    ipcMain.handle('getTimeEntryState', () => ({
+        currentTimeEntry: currentTimeEntryState,
+        lastTimeEntry: lastTimeEntryState,
+    }))
     ipcMain.on('showMiniWindow', () => {
         if (!isE2ETesting()) {
             miniWindow.show()

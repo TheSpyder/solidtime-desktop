@@ -8,6 +8,7 @@ import { db } from './db/client'
 import { activityPeriods, validateNewActivityPeriod } from './db/schema'
 import { getAppSettings } from './settings'
 import { isTimerRunning } from './timerState'
+import { isSessionActive, onSessionStateChanged } from './connectionState'
 import { currentIdleStart, isUserIdle, subscribePresence } from './presence'
 
 // Idle detection policy on top of the shared presence signal: records
@@ -63,8 +64,16 @@ export async function initializeIdleMonitor() {
 
     registerIdleMonitorListeners()
 
-    // Start monitoring if idle detection is enabled (regardless of timer state)
-    if (idleDetectionEnabled) {
+    // Monitoring runs only while logged in with a confirmed connection;
+    // setting-enabled AND session-active are both required
+    onSessionStateChanged((active) => {
+        if (active && idleDetectionEnabled) {
+            startIdleMonitoring()
+        } else if (!active) {
+            void stopIdleMonitoring()
+        }
+    })
+    if (idleDetectionEnabled && isSessionActive()) {
         startIdleMonitoring()
     }
 }
@@ -76,8 +85,8 @@ function registerIdleMonitorListeners() {
 
         idleDetectionEnabled = enabled
         if (!enabled) {
-            stopIdleMonitoring()
-        } else {
+            void stopIdleMonitoring()
+        } else if (isSessionActive()) {
             startIdleMonitoring()
         }
     })
@@ -102,27 +111,30 @@ function handleIdleEnd(idleStart: Dayjs, idleEnd: Dayjs) {
     const capturedIdleEnd = idleEnd.utc().format()
     activeStartTime = idleEnd
 
-    // Only show dialog if timer is running and we're not already waiting for a response
-    // This prevents multiple dialogs from appearing
     if (suppressNextDialog) {
         // A workday auto-stop already handled the timer for this gap;
         // record the idle period without asking
         suppressNextDialog = false
         saveActivityPeriod(capturedIdleStart, capturedIdleEnd, true)
-    } else if (isTimerRunning() && !waitingForUserResponse) {
-        waitingForUserResponse = true
+    } else if (isTimerRunning()) {
+        // Only one dialog at a time; a gap ending while a dialog is
+        // already open goes unrecorded
+        if (!waitingForUserResponse) {
+            waitingForUserResponse = true
 
-        // Show dialog asynchronously without blocking the presence poll
-        showIdleDialog(capturedIdleStart, capturedIdleEnd, idleDurationSeconds)
-            .then(() => {
-                waitingForUserResponse = false
-            })
-            .catch((error) => {
-                console.error('Error showing idle dialog:', error)
-                waitingForUserResponse = false
-            })
-    } else if (!isTimerRunning()) {
-        // If timer is not running, just save the idle period automatically
+            // Show dialog asynchronously without blocking the presence poll
+            showIdleDialog(capturedIdleStart, capturedIdleEnd, idleDurationSeconds)
+                .then(() => {
+                    waitingForUserResponse = false
+                })
+                .catch((error) => {
+                    console.error('Error showing idle dialog:', error)
+                    waitingForUserResponse = false
+                })
+        }
+    } else {
+        // No timer to ask about — the dialog's default (keep the idle time)
+        // applies silently
         saveActivityPeriod(capturedIdleStart, capturedIdleEnd, true)
     }
 }

@@ -12,7 +12,6 @@ import {
 } from '@solidtime/ui'
 import {
     emptyTimeEntry,
-    getCurrentTimeEntry,
     getTimeEntriesPage,
     useTimeEntryDeleteMutation,
     useCurrentTimeEntryUpdateMutation,
@@ -43,8 +42,6 @@ import { getAllClients, useClientCreateMutation } from '../utils/clients.ts'
 import { dayjs } from '../utils/dayjs.ts'
 import { fromError } from 'zod-validation-error'
 import { apiClient } from '../utils/api'
-import { updateTrayState } from '../utils/tray'
-import { isTrayTimerActivated } from '../utils/settings'
 import { useTimer } from '../utils/useTimer.ts'
 
 const { currentOrganizationId, currentMembership } = useMyMemberships()
@@ -87,38 +84,10 @@ const timeEntries = computed(() => {
     return timeEntriesInfiniteData.value.pages.flatMap((page) => page.data)
 })
 
-const { data: currentTimeEntryResponse, isError: currentTimeEntryResponseIsError } = useQuery({
-    queryKey: ['currentTimeEntry'],
-    queryFn: () => getCurrentTimeEntry(),
-    staleTime: 0, // Always refetch on window focus to catch external changes
-})
-
 // Update lastTimeEntry when timeEntries change
 watch(timeEntries, () => {
     if (timeEntries.value?.[0]) {
         lastTimeEntry.value = { ...timeEntries.value?.[0] }
-    }
-})
-
-watch(currentTimeEntryResponseIsError, () => {
-    if (currentTimeEntryResponseIsError.value) {
-        // Only reset if we had a previously started timer (has an ID)
-        // Don't reset if user is preparing a new time entry (no ID yet)
-        if (currentTimeEntry.value.id !== '') {
-            currentTimeEntry.value = { ...emptyTimeEntry }
-        }
-    }
-})
-
-watch(currentTimeEntryResponse, () => {
-    console.log('update current time entry data')
-    console.log(currentTimeEntryResponse.value)
-    if (currentTimeEntryResponse.value?.data) {
-        currentTimeEntry.value = { ...currentTimeEntryResponse.value?.data }
-    } else if (currentTimeEntry.value.id !== '') {
-        // Server says no active time entry, but we have one locally
-        // (e.g. stopped from another app) — clear it
-        currentTimeEntry.value = { ...emptyTimeEntry }
     }
 })
 
@@ -183,15 +152,6 @@ async function createTag(newTagName: string): Promise<Tag | undefined> {
     }
     return undefined
 }
-
-// Watch for current time entry changes and update tray state
-watch(currentTimeEntry, () => {
-    updateTrayState({ ...currentTimeEntry.value })
-})
-
-watch(isTrayTimerActivated, () => {
-    updateTrayState({ ...currentTimeEntry.value })
-})
 
 // Watch for active state changes and manage live timer
 watchEffect(() => {

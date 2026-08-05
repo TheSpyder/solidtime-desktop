@@ -3,7 +3,7 @@ import { useStorage } from '@vueuse/core'
 import { showMainWindow } from './window'
 import { currentMembershipId } from './myMemberships'
 import { type QueryClient } from '@tanstack/vue-query'
-import { emptyTimeEntry } from './timeEntries'
+import { resetTimerStore } from './timerStore'
 
 const challenge = ref('')
 const state = ref('')
@@ -153,8 +153,7 @@ export async function initializeAuth(queryClient: QueryClient) {
                 const responseData = (await response.json()) as OAuthResponse
                 currentMembershipId.value = null
                 queryClient.clear()
-                useStorage('currentTimeEntry', { ...emptyTimeEntry }).value = null
-                useStorage('lastTimeEntry', { ...emptyTimeEntry }).value = null
+                resetTimerStore()
                 accessToken.value = responseData.access_token
                 refreshToken.value = responseData.refresh_token
                 showMainWindow()
@@ -165,8 +164,7 @@ export async function initializeAuth(queryClient: QueryClient) {
 
 export async function logout(queryClient: QueryClient) {
     queryClient.clear()
-    useStorage('currentTimeEntry', { ...emptyTimeEntry }).value = null
-    useStorage('lastTimeEntry', { ...emptyTimeEntry }).value = null
+    resetTimerStore()
     accessToken.value = ''
     refreshToken.value = ''
     window.localStorage.removeItem('refresh_token')

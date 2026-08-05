@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { PrimaryButton, SecondaryButton, time } from '@solidtime/ui'
+import { LoadingSpinner, PrimaryButton, SecondaryButton, time } from '@solidtime/ui'
 import { Cog6ToothIcon } from '@heroicons/vue/16/solid'
 
 declare global {
@@ -24,15 +24,17 @@ import SidebarNavigation from './components/SidebarNavigation.vue'
 import { isWidgetActivated } from './utils/settings.ts'
 
 import UpdateStatusBar from './components/UpdateStatusBar.vue'
-import { useTimer } from './utils/useTimer.ts'
+import { useTimer, useTimerReconciliation } from './utils/useTimer.ts'
 import { useRouter } from 'vue-router'
 import { listenForBackendEvent } from './utils/events.ts'
 import { getMe } from './utils/me'
 import { initializeSettings } from './utils/settings.ts'
 import { useLiveTimer } from './utils/liveTimer'
 import { dayjs } from './utils/dayjs'
-import { useStorage } from '@vueuse/core'
-import { emptyTimeEntry } from './utils/timeEntries'
+import { currentTimeEntry, lastTimeEntry } from './utils/timerStore.ts'
+import { updateTrayState } from './utils/tray.ts'
+import { isTrayTimerActivated } from './utils/settings.ts'
+import { serverReachable } from './utils/reachability.ts'
 
 const router = useRouter()
 
@@ -41,9 +43,11 @@ const queryClient = useQueryClient()
 // Use the timer composable for shared timer logic
 const { stopTimer, continueLastTimer, isActive } = useTimer()
 
+// The single "server wins" point runs for the app's whole lifetime
+useTimerReconciliation()
+
 // Live timer for bottom row display
 const { liveTimer, startLiveTimer, stopLiveTimer } = useLiveTimer()
-const currentTimeEntry = useStorage('currentTimeEntry', { ...emptyTimeEntry })
 
 const currentTime = computed(() => {
     if (liveTimer.value && currentTimeEntry.value.start) {
@@ -67,13 +71,20 @@ watchEffect(() => {
 const {
     data: meResponse,
     isError: meIsError,
+    isFetching: meIsFetching,
     error: meError,
     refetch: meRefetch,
 } = useQuery({
     queryKey: ['me'],
     queryFn: () => getMe(),
     enabled: isLoggedIn,
-    retry: 2,
+    // Each attempt can take the full 10s axios timeout, so more automatic
+    // retries would keep the user staring at the connecting screen; one is
+    // enough to ride out a transient blip, the Retry button covers the rest
+    retry: 1,
+    // Regaining window focus (which any click can trigger) must not restart
+    // the connection attempt behind the error screen
+    refetchOnWindowFocus: false,
     networkMode: 'always',
 })
 
@@ -96,6 +107,25 @@ const isMeLoaded = computed(() => !!meResponse.value?.data)
 
 // Watch timer state and notify main process for idle detection
 watch(isActive, (active) => window.electronAPI?.timerStateChanged?.(active), { immediate: true })
+
+// Push the timer state to the main process; one message feeds the tray and
+// the mini window
+watch(
+    [currentTimeEntry, isTrayTimerActivated],
+    () => updateTrayState({ ...currentTimeEntry.value }),
+    { immediate: true }
+)
+watch(
+    lastTimeEntry,
+    () => window.electronAPI?.updateLastTimeEntry?.(JSON.stringify(lastTimeEntry.value)),
+    { immediate: true }
+)
+
+// Notify main process once the server connection is up, so it never prompts
+// to start a timer that could not be saved
+watch(isMeLoaded, (connected) => window.electronAPI?.connectionStateChanged?.(connected), {
+    immediate: true,
+})
 
 onMounted(async () => {
     initializeAuth(queryClient)
@@ -226,6 +256,9 @@ whenever(cmdComma, () => {
                             No timer running
                         </div>
                     </div>
+                    <div v-if="!serverReachable" class="text-text-tertiary font-medium text-xs">
+                        Can't reach server — changes will sync when reconnected
+                    </div>
                 </div>
             </div>
             <div v-else-if="isLoggedIn" class="flex-1 flex items-center justify-center">
@@ -241,12 +274,23 @@ whenever(cmdComma, () => {
                     <div v-if="meErrorMessage" class="text-text-tertiary text-xs font-mono">
                         {{ meErrorMessage }}
                     </div>
-                    <div class="flex items-center space-x-2">
+                    <div
+                        v-if="meIsFetching"
+                        class="flex items-center space-x-2 text-text-tertiary text-sm">
+                        <LoadingSpinner class="h-4 w-4"></LoadingSpinner>
+                        <span>Retrying…</span>
+                    </div>
+                    <div v-else class="flex items-center space-x-2">
                         <PrimaryButton @click="meRefetch()">Retry</PrimaryButton>
                         <SecondaryButton @click="logout(queryClient)">Log out</SecondaryButton>
                     </div>
                 </div>
-                <div v-else class="text-text-tertiary font-medium text-sm">Loading…</div>
+                <div v-else class="flex flex-col items-center space-y-4">
+                    <LoadingSpinner></LoadingSpinner>
+                    <div class="text-text-tertiary font-medium text-sm">
+                        Connecting to {{ endpoint }}…
+                    </div>
+                </div>
             </div>
             <div v-else class="flex-1">
                 <div class="flex flex-col space-y-6 py-12 items-center justify-center">

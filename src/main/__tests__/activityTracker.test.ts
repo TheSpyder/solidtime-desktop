@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => {
         ipcMainHandle: vi.fn(),
         appQuit: vi.fn(),
         getAppSettings: vi.fn(),
+        isSessionActive: vi.fn(() => true),
+        onSessionStateChanged: vi.fn(),
         dbInsertValues: vi.fn(async () => {}),
     }
 })
@@ -40,6 +42,11 @@ vi.mock('../settings', () => ({
 
 vi.mock('../permissions', () => ({
     hasScreenRecordingPermission: () => true,
+}))
+
+vi.mock('../connectionState', () => ({
+    isSessionActive: mocks.isSessionActive,
+    onSessionStateChanged: mocks.onSessionStateChanged,
 }))
 
 vi.mock('../db/client', () => ({
@@ -82,6 +89,12 @@ function getPowerHandler(event: string): () => void {
     const call = mocks.powerMonitorOn.mock.calls.find(([name]) => name === event)
     if (!call) throw new Error(`No powerMonitor handler registered for ${event}`)
     return call[1]
+}
+
+function getSessionListener(): (active: boolean) => void {
+    const call = mocks.onSessionStateChanged.mock.calls[0]
+    if (!call) throw new Error('No session state listener registered')
+    return call[0]
 }
 
 function windowInfo(id: number, appName: string, title: string): WindowInfo {
@@ -130,6 +143,7 @@ describe('activityTracker presence awareness', () => {
         vi.stubEnv('XDG_SESSION_TYPE', 'x11')
         mocks.backend.handler = null
         mocks.getSystemIdleTime.mockReturnValue(0)
+        mocks.isSessionActive.mockReturnValue(true)
     })
 
     afterEach(() => {
@@ -288,5 +302,38 @@ describe('activityTracker presence awareness', () => {
         await advanceMinutes(10)
         getPowerHandler('resume')()
         expect(savedActivities()).toHaveLength(1)
+    })
+
+    it('does not record before the session start signal, then starts on it', async () => {
+        mocks.isSessionActive.mockReturnValue(false)
+        await initialize()
+
+        // The backend was never started, so nothing can be recorded
+        expect(mocks.backend.start).not.toHaveBeenCalled()
+
+        mocks.isSessionActive.mockReturnValue(true)
+        getSessionListener()(true)
+        await vi.advanceTimersByTimeAsync(0)
+
+        await focusWindow(windowInfo(1, 'Code', 'main.ts'))
+        await advanceMinutes(3)
+        await focusWindow(windowInfo(2, 'Firefox', 'docs'))
+
+        expect(savedActivities()).toHaveLength(1)
+    })
+
+    it('stops recording on the logout signal', async () => {
+        await initialize()
+
+        await focusWindow(windowInfo(1, 'Code', 'main.ts'))
+        await advanceMinutes(2)
+
+        mocks.isSessionActive.mockReturnValue(false)
+        getSessionListener()(false)
+        await vi.advanceTimersByTimeAsync(0)
+
+        // The activity accumulated while logged in is saved at logout
+        expect(savedActivities()).toHaveLength(1)
+        expect(mocks.backend.stop).toHaveBeenCalled()
     })
 })

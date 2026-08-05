@@ -12,6 +12,7 @@ import { initializePresence } from './presence'
 import { initializeIdleMonitor } from './idleMonitor'
 import { initializeWorkdayMonitor } from './workdayMonitor'
 import { registerTimerStateListener } from './timerState'
+import { registerConnectionStateListener } from './connectionState'
 import { runMigrations } from './db/migrate'
 import { registerActivityPeriodListeners } from './activityPeriods'
 import { registerSettingsListeners } from './settings'
@@ -149,6 +150,7 @@ app.whenReady().then(async () => {
     registerActivityPeriodListeners()
     registerSettingsListeners()
     registerTimerStateListener()
+    registerConnectionStateListener()
     registerWindowActivitiesHandlers()
     registerAppIconHandlers()
     registerXWinExtensionHandlers()

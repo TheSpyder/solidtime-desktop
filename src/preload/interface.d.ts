@@ -69,6 +69,13 @@ export interface IElectronAPI {
     onStartTimer: (callback: () => void) => void
     onStopTimer: (callback: (endTime?: string) => void) => void
     updateTrayState: (timeEntry: string, showTimer: boolean) => void
+    updateLastTimeEntry: (timeEntry: string) => void
+    onCurrentTimeEntryChanged: (callback: (serialized: string) => void) => void
+    onLastTimeEntryChanged: (callback: (serialized: string) => void) => void
+    getTimeEntryState: () => Promise<{
+        currentTimeEntry: string | null
+        lastTimeEntry: string | null
+    }>
     updateAutoUpdater: () => void
     updateIdleThreshold: (thresholdMinutes: number) => void
     updateIdleDetectionEnabled: (enabled: boolean) => void
@@ -76,6 +83,7 @@ export interface IElectronAPI {
     getPendingWorkdayStop: () => Promise<string | null>
     updateActivityTrackingEnabled: (enabled: boolean) => void
     timerStateChanged: (running: boolean) => void
+    connectionStateChanged: (connected: boolean) => void
     onIdleDialogResponse: (
         callback: (data: { choice: number; idleStartTime: string; idleEndTime: string }) => void
     ) => () => void // Returns cleanup function to remove listener

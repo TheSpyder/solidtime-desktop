@@ -13,6 +13,7 @@ import {
 } from './presence'
 import { suppressNextIdleDialog } from './idleMonitor'
 import { isTimerRunning } from './timerState'
+import { isSessionActive, onSessionStateChanged } from './connectionState'
 import {
     isSameWorkdayWindow,
     isWithinWorkday,
@@ -80,7 +81,18 @@ export async function initializeWorkdayMonitor() {
 
     registerWorkdayListeners()
 
-    if (isWorkdayTrackingEnabled()) {
+    // Monitoring runs only while logged in with a confirmed connection;
+    // setting-enabled AND session-active are both required. The streak floor
+    // is therefore clamped to monitoring start ≈ login time — no backdating
+    // before login.
+    onSessionStateChanged((active) => {
+        if (active && isWorkdayTrackingEnabled()) {
+            startWorkdayMonitoring()
+        } else if (!active) {
+            stopWorkdayMonitoring()
+        }
+    })
+    if (isWorkdayTrackingEnabled() && isSessionActive()) {
         startWorkdayMonitoring()
     }
 }
@@ -115,7 +127,7 @@ function registerWorkdayListeners() {
         }
         updateWorkdaySchedule(settings)
 
-        if (isWorkdayTrackingEnabled()) {
+        if (isWorkdayTrackingEnabled() && isSessionActive()) {
             startWorkdayMonitoring()
         } else {
             stopWorkdayMonitoring()

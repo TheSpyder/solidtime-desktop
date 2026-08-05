@@ -6,6 +6,7 @@ import { ipcMain } from 'electron'
 import { logger } from './logger'
 import { isSameWindowActivity, type ActivityBackend, type WindowInfo } from './activity/backend'
 import { isUserIdle, subscribePresence } from './presence'
+import { isSessionActive, onSessionStateChanged } from './connectionState'
 
 let activityTrackingEnabled = false
 let backend: ActivityBackend | null = null
@@ -84,7 +85,16 @@ export async function initializeActivityTracker() {
 
         logger.info('Activity tracker initialized. Enabled:', activityTrackingEnabled)
 
-        if (activityTrackingEnabled) {
+        // Tracking runs only while logged in with a confirmed connection;
+        // setting-enabled AND session-active are both required
+        onSessionStateChanged((active) => {
+            if (active && activityTrackingEnabled) {
+                void startActivityTracking()
+            } else if (!active) {
+                void stopActivityTracking()
+            }
+        })
+        if (activityTrackingEnabled && isSessionActive()) {
             await startActivityTracking()
         }
 
@@ -104,7 +114,9 @@ function registerActivityTrackerListeners() {
         activityTrackingEnabled = enabled
 
         if (enabled) {
-            await startActivityTracking()
+            if (isSessionActive()) {
+                await startActivityTracking()
+            }
         } else {
             await stopActivityTracking()
         }

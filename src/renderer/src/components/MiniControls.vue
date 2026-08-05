@@ -4,8 +4,8 @@ import { ProjectBadge, time, TimeTrackerStartStop } from '@solidtime/ui'
 import { useLiveTimer } from '../utils/liveTimer'
 import { useMyMemberships } from '../utils/myMemberships'
 import { computed, watch, watchEffect } from 'vue'
-import { useStorage } from '@vueuse/core'
-import { emptyTimeEntry } from '../utils/timeEntries'
+import type { TimeEntry } from '@solidtime/api'
+import { currentTimeEntry, lastTimeEntry } from '../utils/timerStore'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { getAllProjects } from '../utils/projects'
 import { getAllTasks } from '../utils/tasks'
@@ -29,7 +29,23 @@ const organizationIdToLoad = computed(() => {
 
 const currentOrganizationLoaded = computed(() => !!organizationIdToLoad.value)
 
-const currentTimeEntry = useStorage('currentTimeEntry', { ...emptyTimeEntry })
+// Timer state is pushed from the main window over IPC; the initial fetch
+// covers pushes sent before this window finished loading
+window.electronAPI.onCurrentTimeEntryChanged((serialized) => {
+    currentTimeEntry.value = JSON.parse(serialized) as TimeEntry
+})
+window.electronAPI.onLastTimeEntryChanged((serialized) => {
+    lastTimeEntry.value = JSON.parse(serialized) as TimeEntry
+})
+window.electronAPI.getTimeEntryState().then((state) => {
+    if (state.currentTimeEntry) {
+        currentTimeEntry.value = JSON.parse(state.currentTimeEntry) as TimeEntry
+    }
+    if (state.lastTimeEntry) {
+        lastTimeEntry.value = JSON.parse(state.lastTimeEntry) as TimeEntry
+    }
+})
+
 const { data: projectsResponse } = useQuery({
     queryKey: ['projects', organizationIdToLoad],
     queryFn: () => getAllProjects(organizationIdToLoad.value),
@@ -47,8 +63,6 @@ const { data: currentTimeEntryTasksResponse } = useQuery({
     queryFn: () => getAllTasks(currentTimeEntry.value.organization_id),
     enabled: currentOrganizationLoaded,
 })
-
-const lastTimeEntry = useStorage('lastTimeEntry', { ...emptyTimeEntry })
 
 const tasks = computed(() => {
     if (isRunning.value) {
