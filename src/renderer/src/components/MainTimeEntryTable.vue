@@ -50,6 +50,13 @@ import { useTimer, getLastWorkTimeEntry } from '../utils/useTimer.ts'
 import { useBreaksEnabled } from '../utils/organization.ts'
 import { useRouter } from 'vue-router'
 import { useStorage } from '@vueuse/core'
+import {
+    isHttpResponseError,
+    isNetworkError,
+    reportServerReachable,
+    reportServerUnreachable,
+    serverReachable,
+} from '../utils/reachability.ts'
 
 // Same as the ui package's TimeTrackerMode, which is not exported from its index
 type TimeTrackerMode = 'project' | 'simple'
@@ -126,19 +133,41 @@ const pendingTimeEntryMutations = useIsMutating({
     predicate: (mutation) => mutation.options.scope?.id === 'timeEntry',
 })
 
+const PROBE_INTERVAL_MS = 5000
+
 const {
     data: currentTimeEntryResponse,
+    error: currentTimeEntryError,
     isError: currentTimeEntryResponseIsError,
     dataUpdatedAt: currentTimeEntryUpdatedAt,
     errorUpdatedAt: currentTimeEntryErrorUpdatedAt,
 } = useQuery({
     queryKey: ['currentTimeEntry'],
-    queryFn: () => getCurrentTimeEntry(),
+    // Doubles as the reachability probe: its outcomes drive the
+    // onlineManager, which pauses/resumes the timer mutations in
+    // timeEntries.ts (see retryWhileUnreachable).
+    queryFn: async () => {
+        try {
+            const result = await getCurrentTimeEntry()
+            reportServerReachable()
+            return result
+        } catch (error) {
+            if (isNetworkError(error)) {
+                reportServerUnreachable()
+            } else if (isHttpResponseError(error)) {
+                // Any HTTP response is a reachability success — including
+                // the 404 this endpoint answers when no timer is active
+                reportServerReachable()
+            }
+            throw error
+        }
+    },
     staleTime: 0, // Always refetch on window focus to catch external changes
-    // While time-entry mutations are in flight the server state is transiently
-    // behind (e.g. between stopping work and creating a break), so don't fetch;
-    // the query refetches once the mutation queue has drained
-    enabled: computed(() => pendingTimeEntryMutations.value === 0),
+    // The probe must keep running while the manager reports offline, and
+    // one attempt per probe tick is enough
+    networkMode: 'always',
+    retry: false,
+    refetchInterval: computed(() => (serverReachable.value ? false : PROBE_INTERVAL_MS)),
 })
 
 // Only work entries qualify — continuing or resuming from the widget/tray must never restart a break
@@ -150,7 +179,20 @@ watch(timeEntries, () => {
 })
 
 function reconcileCurrentTimeEntry() {
+    // While time-entry mutations are in flight the server state is
+    // transiently behind (e.g. between stopping work and creating a break);
+    // skip applying it here and let the invalidation after they settle
+    // trigger this again with the post-mutation state
+    if (pendingTimeEntryMutations.value > 0) {
+        return
+    }
+
     if (currentTimeEntryResponseIsError.value) {
+        // A network error carries no information about the timer; only an
+        // HTTP response may clear the local state
+        if (isNetworkError(currentTimeEntryError.value)) {
+            return
+        }
         // Only reset if we had a previously started timer (has an ID)
         // Don't reset if user is preparing a new time entry (no ID yet)
         if (currentTimeEntry.value.id !== '') {

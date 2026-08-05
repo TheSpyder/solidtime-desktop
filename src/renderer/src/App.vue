@@ -33,6 +33,7 @@ import { useLiveTimer } from './utils/liveTimer'
 import { dayjs } from './utils/dayjs'
 import { useStorage } from '@vueuse/core'
 import { emptyTimeEntry } from './utils/timeEntries'
+import { serverReachable } from './utils/reachability'
 import { useOrganization } from './utils/organization.ts'
 
 const router = useRouter()
@@ -279,6 +280,9 @@ async function retryMe() {
                         <div v-else class="text-text-tertiary font-medium text-xs">
                             No timer running
                         </div>
+                    </div>
+                    <div v-if="!serverReachable" class="text-text-tertiary font-medium text-xs">
+                        Can't reach server — changes will sync when reconnected
                     </div>
                 </div>
             </div>
