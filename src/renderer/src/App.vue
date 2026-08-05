@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { PrimaryButton, SecondaryButton, time } from '@solidtime/ui'
+import { LoadingSpinner, PrimaryButton, SecondaryButton, time } from '@solidtime/ui'
 import { Cog6ToothIcon } from '@heroicons/vue/16/solid'
 
 declare global {
@@ -11,6 +11,7 @@ declare global {
 
 import AutoUpdaterOverlay from './components/AutoUpdaterOverlay.vue'
 import { useQueryClient, useQuery } from '@tanstack/vue-query'
+import { isAxiosError } from 'axios'
 
 import { onMounted, provide, ref, watchEffect, watch, computed } from 'vue'
 import { endpoint, initializeAuth, isLoggedIn, logout, openLoginWindow } from './utils/oauth.ts'
@@ -73,15 +74,35 @@ watchEffect(() => {
 const {
     data: meResponse,
     isError: meError,
+    error: meErrorObject,
+    isFetching: meIsFetching,
     failureCount: meFailureCount,
     refetch: refetchMe,
 } = useQuery({
     queryKey: ['me'],
     queryFn: () => getMe(),
     enabled: isLoggedIn,
+    // The global default retries up to 6 times with backoff, which would
+    // leave the Retry button hidden behind the "Retrying…" state for well
+    // over a minute; one retry is enough to ride out a transient blip; it
+    // also caps failureCount at 2 to match meFailed below, so isFetching
+    // settles false right as the error screen commits to showing it
+    retry: 1,
+    // Regaining window focus (which any click can trigger) must not restart
+    // the connection attempt behind the error screen
+    refetchOnWindowFocus: false,
 })
 
 const meFailed = computed(() => meError.value || meFailureCount.value >= 2)
+
+const meErrorMessage = computed(() => {
+    const error = meErrorObject.value
+    if (!error) return ''
+    if (isAxiosError(error) && error.response) {
+        return `The server responded with HTTP ${error.response.status} ${error.response.statusText}`.trimEnd()
+    }
+    return error.message
+})
 
 const appVersion = ref('')
 
@@ -269,7 +290,16 @@ async function retryMe() {
                     <p class="text-center text-text-tertiary text-sm max-w-sm break-all">
                         {{ endpoint }}
                     </p>
-                    <div class="flex items-center space-x-2">
+                    <p v-if="meErrorMessage" class="text-text-tertiary text-xs font-mono">
+                        {{ meErrorMessage }}
+                    </p>
+                    <div
+                        v-if="meIsFetching"
+                        class="flex items-center space-x-2 text-text-tertiary text-sm">
+                        <LoadingSpinner class="h-4 w-4"></LoadingSpinner>
+                        <span>Retrying…</span>
+                    </div>
+                    <div v-else class="flex items-center space-x-2">
                         <PrimaryButton @click="retryMe">Retry</PrimaryButton>
                         <SecondaryButton @click="showInstanceSettingsModal = true">
                             Instance Settings
